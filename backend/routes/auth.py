@@ -3,7 +3,7 @@ Auth routes: request access, magic link login, logout.
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
-from services.supabase_client import get_admin_client
+from services.supabase_client import get_admin_client, get_anon_client
 from config import ADMIN_EMAIL
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -74,11 +74,23 @@ def login(body: LoginBody):
     return {"message": "Magic link sent. Check your email."}
 
 
+APP_URL = "https://resume-tailor-ogop.onrender.com"
+
+
 def _send_magic_link(admin_client, email: str):
+    """
+    Send a magic link email via Supabase OTP.
+    Uses the anon client so Supabase actually delivers the email —
+    admin generate_link() only returns a token, it never sends email.
+    """
     try:
-        admin_client.auth.admin.generate_link({
-            "type": "magiclink",
+        anon = get_anon_client()
+        anon.auth.sign_in_with_otp({
             "email": email,
+            "options": {
+                "email_redirect_to": f"{APP_URL}/dashboard",
+                "should_create_user": True,
+            }
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send magic link: {str(e)}")
