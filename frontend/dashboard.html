@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — Resume Tailor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav>
+  <a href="/dashboard" class="nav-brand">Resume Tailor</a>
+  <div class="nav-links">
+    <a href="/dashboard" class="active">Home</a>
+    <a href="/tailor">Tailor</a>
+    <a href="/improve">Improve</a>
+    <a href="/history">History</a>
+    <a href="/profile">Profile</a>
+    <a href="#" onclick="logout()">Sign Out</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div id="alert-box"></div>
+
+  <div style="margin-bottom:24px;">
+    <h1 style="font-size:22px;font-weight:700;color:var(--navy)" id="greeting">Welcome back</h1>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Here's where you stand.</p>
+  </div>
+
+  <!-- Stats -->
+  <div class="dash-grid">
+    <div class="stat-card">
+      <div class="stat-num" id="stat-files">—</div>
+      <div class="stat-label">Resume files uploaded</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num" id="stat-tailored">—</div>
+      <div class="stat-label">Tailored resumes created</div>
+    </div>
+  </div>
+
+  <!-- Master resume status -->
+  <div class="card">
+    <h2>Master Resume</h2>
+    <div id="master-status">
+      <p style="color:var(--muted);font-size:14px;">Loading...</p>
+    </div>
+  </div>
+
+  <!-- Quick actions -->
+  <div class="card">
+    <h2>Quick Actions</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <a href="/tailor" class="btn btn-primary">Tailor a Resume</a>
+      <a href="/improve" class="btn btn-navy">Improve Master Resume</a>
+      <a href="/history" class="btn btn-outline">View History</a>
+      <a href="/profile" class="btn btn-outline">Edit Profile</a>
+    </div>
+  </div>
+
+  <!-- Upload section -->
+  <div class="card">
+    <h2>Your Resume Files</h2>
+    <p style="font-size:14px;color:var(--muted);margin-bottom:16px;">Upload old resumes, LinkedIn exports, or any version — we'll synthesize them into your master resume.</p>
+
+    <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc" multiple>
+      <svg width="32" height="32" fill="none" stroke="var(--border)" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+      </svg>
+      <p>Click or drag files here (PDF or DOCX)</p>
+    </div>
+
+    <div id="upload-progress"></div>
+
+    <ul class="file-list" id="file-list">
+      <li style="color:var(--muted);font-size:14px;">Loading files...</li>
+    </ul>
+
+    <div style="margin-top:12px;">
+      <button class="btn btn-navy" onclick="synthesizeMaster()" id="btn-synthesize">
+        Re-Synthesize Master Resume
+      </button>
+      <span style="font-size:12px;color:var(--muted);margin-left:10px;">Run this after uploading new files</span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  requireAuth();
+
+  async function loadDashboard() {
+    try {
+      const [profile, files, history, master] = await Promise.all([
+        apiFetch("/api/profile/"),
+        apiFetch("/api/resumes/"),
+        apiFetch("/api/tailor/history"),
+        apiFetch("/api/master/")
+      ]);
+
+      // Greeting
+      if (profile.full_name) {
+        document.getElementById("greeting").textContent = `Welcome back, ${profile.full_name.split(" ")[0]}`;
+      }
+
+      // Stats
+      document.getElementById("stat-files").textContent    = files.length;
+      document.getElementById("stat-tailored").textContent = history.length;
+
+      // Master resume status
+      const masterEl = document.getElementById("master-status");
+      if (master.content) {
+        masterEl.innerHTML = `
+          <div class="alert alert-success">Master resume is up to date — last updated ${fmtDate(master.last_updated)}</div>
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer;font-size:13px;color:var(--blue)">Preview first 400 characters</summary>
+            <pre style="font-size:12px;color:var(--muted);white-space:pre-wrap;margin-top:8px;">${master.content.slice(0,400)}...</pre>
+          </details>`;
+      } else {
+        masterEl.innerHTML = `<div class="alert alert-info">No master resume yet. Upload at least one resume file and click "Re-Synthesize Master Resume".</div>`;
+      }
+
+      // File list
+      renderFileList(files);
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  function renderFileList(files) {
+    const ul = document.getElementById("file-list");
+    if (!files.length) {
+      ul.innerHTML = `<li style="color:var(--muted);font-size:14px;justify-content:center">No files uploaded yet</li>`;
+      return;
+    }
+    ul.innerHTML = files.map(f => `
+      <li>
+        <div>
+          <div class="file-name">${f.filename}</div>
+          <div class="file-meta">${f.file_type?.toUpperCase()} · Uploaded ${fmtDate(f.uploaded_at)}</div>
+        </div>
+        <button class="btn btn-outline" style="font-size:12px;padding:5px 10px" onclick="deleteFile('${f.id}')">Remove</button>
+      </li>`).join("");
+  }
+
+  async function deleteFile(id) {
+    if (!confirm("Remove this file?")) return;
+    try {
+      await apiFetch(`/api/resumes/${id}`, { method: "DELETE" });
+      loadDashboard();
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  async function synthesizeMaster() {
+    const btn = document.getElementById("btn-synthesize");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> Synthesizing...`;
+    try {
+      const res = await apiFetch("/api/master/synthesize", { method: "POST" });
+      showAlert("alert-box", "Master resume updated.", "success");
+      loadDashboard();
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "Re-Synthesize Master Resume";
+    }
+  }
+
+  // File upload
+  document.getElementById("file-input").addEventListener("change", handleFileSelect);
+
+  async function handleFileSelect(e) {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      await uploadFile(file);
+    }
+    e.target.value = "";
+    loadDashboard();
+  }
+
+  async function uploadFile(file) {
+    const prog = document.getElementById("upload-progress");
+    prog.innerHTML = `<div class="alert alert-info">Uploading ${file.name}...</div>`;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await apiUpload("/api/resumes/upload", fd);
+      prog.innerHTML = `<div class="alert alert-success">✓ ${file.name} uploaded</div>`;
+    } catch (e) {
+      prog.innerHTML = `<div class="alert alert-error">Failed to upload ${file.name}: ${e.message}</div>`;
+    }
+  }
+
+  // Drag and drop
+  const zone = document.getElementById("drop-zone");
+  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("dragover"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("dragover"));
+  zone.addEventListener("drop", async e => {
+    e.preventDefault();
+    zone.classList.remove("dragover");
+    for (const file of Array.from(e.dataTransfer.files)) {
+      await uploadFile(file);
+    }
+    loadDashboard();
+  });
+
+  loadDashboard();
+</script>
+</body>
+</html>
