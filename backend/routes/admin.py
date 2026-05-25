@@ -4,6 +4,7 @@ Only accessible to the admin email defined in config.
 """
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
+from datetime import datetime
 from services.supabase_client import get_admin_client, get_user_from_token
 from config import ADMIN_EMAIL
 
@@ -70,7 +71,7 @@ def approve_request(body: ApprovalBody, authorization: str = Header(None)):
     # Update status
     admin.table("access_requests").update({
         "status": "approved",
-        "reviewed_at": "now()"
+        "reviewed_at": datetime.utcnow().isoformat()
     }).eq("id", body.request_id).execute()
 
     return {"message": f"Invite sent to {email}"}
@@ -88,7 +89,7 @@ def reject_request(body: ApprovalBody, authorization: str = Header(None)):
 
     admin.table("access_requests").update({
         "status": "rejected",
-        "reviewed_at": "now()"
+        "reviewed_at": datetime.utcnow().isoformat()
     }).eq("id", body.request_id).execute()
 
     return {"message": "Request rejected"}
