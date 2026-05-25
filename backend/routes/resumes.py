@@ -2,12 +2,25 @@
 Resume file upload routes.
 """
 from fastapi import APIRouter, Header, HTTPException, UploadFile, File
+from pathlib import Path
 from services.supabase_client import get_admin_client, get_user_from_token
 from services.extractor import extract_text
 from config import RESUME_BUCKET
+import logging
 import uuid
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
+
+# Allowed MIME types for resume files
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+}
 
 
 def _require_user(authorization: str):
@@ -42,38 +55,48 @@ async def upload_resume(
     user = _require_user(authorization)
     admin = get_admin_client()
 
-    # Validate file type
-    filename = file.filename or "resume"
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    # Validate file extension
+    raw_filename = file.filename or "resume"
+    # Strip path components to prevent path traversal attacks
+    safe_filename = Path(raw_filename).name
+    ext = safe_filename.lower().rsplit(".", 1)[-1] if "." in safe_filename else ""
     if ext not in ("pdf", "docx", "doc"):
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
 
-    file_bytes = await file.read()
+    # Validate MIME type (defense-in-depth alongside extension check)
+    content_type = file.content_type or ""
+    if content_type and content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
+
+    # Enforce file size limit BEFORE reading the entire payload into memory
+    file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10 MB.")
 
     # Extract text
     try:
-        extracted = extract_text(file_bytes, filename)
+        extracted = extract_text(file_bytes, safe_filename)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not read file: {str(e)}")
 
-    # Upload to Supabase Storage
-    storage_path = f"{user.id}/{uuid.uuid4()}/{filename}"
+    # Upload to Supabase Storage — uuid in path prevents collisions; safe_filename strips traversal
+    storage_path = f"{user.id}/{uuid.uuid4()}/{safe_filename}"
     admin.storage.from_(RESUME_BUCKET).upload(
         path=storage_path,
         file=file_bytes,
-        file_options={"content-type": file.content_type or "application/octet-stream"}
+        file_options={"content-type": content_type or "application/octet-stream"}
     )
 
     # Save metadata to DB
     admin.table("resume_files").insert({
         "user_id": str(user.id),
-        "filename": filename,
+        "filename": safe_filename,
         "file_path": storage_path,
         "file_type": ext,
         "extracted_text": extracted
     }).execute()
 
-    return {"message": f"'{filename}' uploaded successfully", "extracted_length": len(extracted)}
+    return {"message": f"'{safe_filename}' uploaded successfully", "extracted_length": len(extracted)}
 
 
 @router.delete("/{file_id}")
@@ -89,11 +112,11 @@ def delete_resume(file_id: str, authorization: str = Header(None)):
 
     file_path = result.data[0]["file_path"]
 
-    # Delete from storage
+    # Delete from storage — log failure but continue so DB record is always cleaned up
     try:
         admin.storage.from_(RESUME_BUCKET).remove([file_path])
-    except Exception:
-        pass  # Continue even if storage delete fails
+    except Exception as e:
+        logger.warning("Storage delete failed for path=%s: %s", file_path, e)
 
     # Delete from DB
     admin.table("resume_files").delete().eq("id", file_id).execute()
