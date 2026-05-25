@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Profile — Resume Tailor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav>
+  <a href="/dashboard" class="nav-brand">Resume Tailor</a>
+  <div class="nav-links">
+    <a href="/dashboard">Home</a>
+    <a href="/tailor">Tailor</a>
+    <a href="/improve">Improve</a>
+    <a href="/history">History</a>
+    <a href="/profile" class="active">Profile</a>
+    <a href="#" onclick="logout()">Sign Out</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div id="alert-box"></div>
+
+  <div style="margin-bottom:24px;">
+    <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Your Profile</h1>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">
+      This info appears at the top of every resume. Keep it current.
+    </p>
+  </div>
+
+  <div class="card">
+    <label>Full Name</label>
+    <input type="text" id="full-name" placeholder="Jane Smith">
+
+    <label>Email <span style="color:var(--muted);font-size:12px;">(from your account)</span></label>
+    <input type="email" id="email" disabled style="background:var(--light);color:var(--muted);">
+
+    <label>Phone</label>
+    <input type="text" id="phone" placeholder="(404) 555-0100">
+
+    <label>Location</label>
+    <input type="text" id="location" placeholder="Atlanta, GA">
+
+    <label>LinkedIn URL</label>
+    <input type="text" id="linkedin" placeholder="linkedin.com/in/yourname">
+
+    <label>Website / Portfolio (optional)</label>
+    <input type="text" id="website" placeholder="yoursite.com">
+
+    <button class="btn btn-primary" onclick="saveProfile()">Save Profile</button>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  requireAuth();
+
+  async function loadProfile() {
+    try {
+      const p = await apiFetch("/api/profile/");
+      document.getElementById("full-name").value = p.full_name  || "";
+      document.getElementById("email").value     = p.email      || "";
+      document.getElementById("phone").value     = p.phone      || "";
+      document.getElementById("location").value  = p.location   || "";
+      document.getElementById("linkedin").value  = p.linkedin_url || "";
+      document.getElementById("website").value   = p.website    || "";
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  async function saveProfile() {
+    try {
+      await apiFetch("/api/profile/", {
+        method: "PATCH",
+        body: JSON.stringify({
+          full_name:    document.getElementById("full-name").value.trim(),
+          phone:        document.getElementById("phone").value.trim(),
+          location:     document.getElementById("location").value.trim(),
+          linkedin_url: document.getElementById("linkedin").value.trim(),
+          website:      document.getElementById("website").value.trim(),
+        })
+      });
+      showAlert("alert-box", "Profile saved.", "success");
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  loadProfile();
+</script>
+</body>
+</html>
