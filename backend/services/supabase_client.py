@@ -1,6 +1,10 @@
 from supabase import create_client, Client
 from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
 
+# Anon client — for unauthenticated auth calls (e.g. sign_in_with_otp)
+def get_anon_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
 # Standard client (respects RLS — use for user-scoped operations)
 def get_client(user_token: str) -> Client:
     client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
