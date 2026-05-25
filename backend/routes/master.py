@@ -64,7 +64,10 @@ def synthesize_master(authorization: str = Header(None)):
     profile = _get_profile(admin, str(user.id))
 
     # Synthesize via Claude
-    master_content = claude_service.synthesize_master_resume(texts, profile)
+    try:
+        master_content = claude_service.synthesize_master_resume(texts, profile)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
     # Upsert master resume
     existing = admin.table("master_resumes").select("id").eq("user_id", str(user.id)).execute()
@@ -80,6 +83,9 @@ def synthesize_master(authorization: str = Header(None)):
         }).execute()
 
     return {"message": "Master resume synthesized", "preview": master_content[:500] + "..."}
+
+
+MAX_HISTORY_TURNS = 20  # cap conversation history to prevent token bloat
 
 
 class GapMessage(BaseModel):
@@ -126,39 +132,46 @@ Ask ONE question at a time. Be conversational, not clinical. Be specific to thei
 Current master resume:
 {master_content or "(No master resume yet — ask them to upload files first)"}"""
 
-    messages = body.history + [{"role": "user", "content": body.message}]
+    # Trim history to last N turns to avoid context overflow
+    trimmed_history = body.history[-MAX_HISTORY_TURNS:]
+    messages = trimmed_history + [{"role": "user", "content": body.message}]
 
-    response = ai_client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2000,
-        system=system_prompt,
-        messages=messages
-    )
+    try:
+        response = ai_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2000,
+            system=system_prompt,
+            messages=messages
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
     reply = response.content[0].text
 
     # Check if Claude included a master resume update
+    # Use .find() instead of .index() to avoid ValueError if markers are missing
     updated_master = None
-    if "UPDATE_MASTER_RESUME:" in reply and "END_UPDATE" in reply:
-        start = reply.index("UPDATE_MASTER_RESUME:") + len("UPDATE_MASTER_RESUME:")
-        end = reply.index("END_UPDATE")
-        updated_master = reply[start:end].strip()
+    update_start = reply.find("UPDATE_MASTER_RESUME:")
+    update_end = reply.find("END_UPDATE")
+    if update_start != -1 and update_end != -1 and update_end > update_start:
+        content_start = update_start + len("UPDATE_MASTER_RESUME:")
+        updated_master = reply[content_start:update_end].strip()
 
         # Save updated master
-        if existing := admin.table("master_resumes").select("id").eq("user_id", str(user.id)).execute():
-            if existing.data:
-                admin.table("master_resumes").update({
-                    "content": updated_master,
-                    "last_updated": "now()"
-                }).eq("user_id", str(user.id)).execute()
-            else:
-                admin.table("master_resumes").insert({
-                    "user_id": str(user.id),
-                    "content": updated_master
-                }).execute()
+        existing = admin.table("master_resumes").select("id").eq("user_id", str(user.id)).execute()
+        if existing.data:
+            admin.table("master_resumes").update({
+                "content": updated_master,
+                "last_updated": "now()"
+            }).eq("user_id", str(user.id)).execute()
+        else:
+            admin.table("master_resumes").insert({
+                "user_id": str(user.id),
+                "content": updated_master
+            }).execute()
 
         # Strip the update block from the visible reply
-        visible_reply = reply[:reply.index("UPDATE_MASTER_RESUME:")].strip()
+        visible_reply = reply[:update_start].strip()
     else:
         visible_reply = reply
 
