@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 9pt;
+    color: #1a1a1a;
+    background: white;
+    line-height: 1.4;
+  }
+
+  .page {
+    width: 8.5in;
+    min-height: 11in;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ─────────────────────────────────── */
+  .header {
+    background: #1B2A4A;
+    color: white;
+    padding: 22pt 28pt 18pt;
+  }
+
+  .header h1 {
+    font-size: 22pt;
+    font-weight: 700;
+    letter-spacing: -0.5pt;
+    margin-bottom: 6pt;
+  }
+
+  .contact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4pt 14pt;
+    font-size: 8pt;
+    color: #c8d4e8;
+    font-weight: 400;
+  }
+
+  .contact-row span { white-space: nowrap; }
+  .contact-row a { color: #c8d4e8; text-decoration: none; }
+
+  /* ── Two-column body ─────────────────────────── */
+  .body {
+    display: flex;
+    flex: 1;
+  }
+
+  /* LEFT COLUMN */
+  .left {
+    width: 2.4in;
+    background: #F4F6FA;
+    padding: 18pt 16pt;
+    border-right: 1pt solid #dde3ef;
+  }
+
+  /* RIGHT COLUMN */
+  .right {
+    flex: 1;
+    padding: 18pt 22pt;
+  }
+
+  /* ── Section headers ─────────────────────────── */
+  .section-title {
+    font-size: 7.5pt;
+    font-weight: 700;
+    letter-spacing: 1.2pt;
+    text-transform: uppercase;
+    color: #1B2A4A;
+    border-bottom: 1.5pt solid #1B2A4A;
+    padding-bottom: 3pt;
+    margin-bottom: 9pt;
+    margin-top: 14pt;
+  }
+
+  .section-title:first-child { margin-top: 0; }
+
+  /* ── Summary ─────────────────────────────────── */
+  .summary { font-size: 9pt; color: #333; line-height: 1.5; margin-bottom: 2pt; }
+
+  /* ── Experience ──────────────────────────────── */
+  .role { margin-bottom: 12pt; }
+  .role-header { font-weight: 600; font-size: 9pt; color: #1B2A4A; }
+  .role-meta { font-size: 8pt; color: #666; margin-bottom: 4pt; }
+
+  .role ul { padding-left: 11pt; margin-top: 3pt; }
+  .role ul li {
+    font-size: 8.5pt;
+    margin-bottom: 2.5pt;
+    color: #222;
+    line-height: 1.4;
+  }
+
+  /* ── Skills ──────────────────────────────────── */
+  .skill-row { margin-bottom: 6pt; }
+  .skill-category {
+    font-size: 7.5pt;
+    font-weight: 600;
+    color: #1B2A4A;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    margin-bottom: 2pt;
+  }
+  .skill-items { font-size: 8pt; color: #444; line-height: 1.4; }
+
+  /* ── Education ───────────────────────────────── */
+  .edu-entry { font-size: 8.5pt; margin-bottom: 7pt; line-height: 1.4; }
+
+  /* ── Certs / Projects ────────────────────────── */
+  .plain-text { font-size: 8.5pt; line-height: 1.5; white-space: pre-line; color: #333; }
+
+  /* ── Page break ──────────────────────────────── */
+  @page { margin: 0; size: letter; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="header">
+    <h1>{{ name }}</h1>
+    <div class="contact-row">
+      {% if email %}<span>{{ email }}</span>{% endif %}
+      {% if phone %}<span>{{ phone }}</span>{% endif %}
+      {% if location %}<span>{{ location }}</span>{% endif %}
+      {% if linkedin %}<span><a href="{{ linkedin }}">{{ linkedin }}</a></span>{% endif %}
+      {% if website %}<span><a href="{{ website }}">{{ website }}</a></span>{% endif %}
+    </div>
+  </div>
+
+  <!-- BODY: two columns -->
+  <div class="body">
+
+    <!-- LEFT COLUMN: Skills, Education, Certs -->
+    <div class="left">
+
+      {% if skills %}
+      <div class="section-title">Skills</div>
+      {% for skill in skills %}
+      <div class="skill-row">
+        {% if skill.category %}<div class="skill-category">{{ skill.category }}</div>{% endif %}
+        <div class="skill-items">{{ skill.items }}</div>
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if education %}
+      <div class="section-title">Education</div>
+      {% for entry in education %}
+      <div class="edu-entry">{{ entry }}</div>
+      {% endfor %}
+      {% endif %}
+
+      {% if certifications %}
+      <div class="section-title">Certifications</div>
+      <div class="plain-text">{{ certifications }}</div>
+      {% endif %}
+
+    </div>
+
+    <!-- RIGHT COLUMN: Summary, Experience, Projects -->
+    <div class="right">
+
+      {% if summary %}
+      <div class="section-title">Summary</div>
+      <div class="summary">{{ summary }}</div>
+      {% endif %}
+
+      {% if experience %}
+      <div class="section-title">Experience</div>
+      {% for role in experience %}
+      <div class="role">
+        <div class="role-header">{{ role.header }}</div>
+        {% if role.bullets %}
+        <ul>
+          {% for bullet in role.bullets %}
+          <li>{{ bullet }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if projects %}
+      <div class="section-title">Projects</div>
+      <div class="plain-text">{{ projects }}</div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+</body>
+</html>
