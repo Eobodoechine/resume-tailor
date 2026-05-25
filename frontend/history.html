@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>History — Resume Tailor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav>
+  <a href="/dashboard" class="nav-brand">Resume Tailor</a>
+  <div class="nav-links">
+    <a href="/dashboard">Home</a>
+    <a href="/tailor">Tailor</a>
+    <a href="/improve">Improve</a>
+    <a href="/history" class="active">History</a>
+    <a href="/profile">Profile</a>
+    <a href="#" onclick="logout()">Sign Out</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div style="margin-bottom:24px;">
+    <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Resume History</h1>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Every tailored resume you've generated. Download any as a PDF.</p>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <table>
+      <thead>
+        <tr>
+          <th>Role</th>
+          <th>Company</th>
+          <th>Date</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="history-body">
+        <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  requireAuth();
+
+  async function loadHistory() {
+    try {
+      const history = await apiFetch("/api/tailor/history");
+      const tbody = document.getElementById("history-body");
+
+      if (!history.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">
+          No tailored resumes yet. <a href="/tailor" style="color:var(--blue)">Create your first one.</a>
+        </td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = history.map(r => `
+        <tr>
+          <td style="font-weight:500">${r.job_title || "—"}</td>
+          <td>${r.company || "—"}</td>
+          <td style="color:var(--muted)">${fmtDate(r.created_at)}</td>
+          <td style="text-align:right">
+            <button class="btn btn-outline" style="font-size:12px;padding:5px 12px"
+              onclick="downloadPDF('${r.id}', '${(r.company||'resume').replace(/'/g,'')}', '${(r.job_title||'role').replace(/'/g,'')}')">
+              PDF
+            </button>
+          </td>
+        </tr>`).join("");
+    } catch (e) {
+      document.getElementById("history-body").innerHTML =
+        `<tr><td colspan="4" style="text-align:center;color:var(--red)">${e.message}</td></tr>`;
+    }
+  }
+
+  async function downloadPDF(id, company, role) {
+    try {
+      const res = await fetch(`/api/tailor/${id}/pdf`, {
+        headers: { "Authorization": `Bearer ${getToken()}` }
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `${company}_${role}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  loadHistory();
+</script>
+</body>
+</html>
