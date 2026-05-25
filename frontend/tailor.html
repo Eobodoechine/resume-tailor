@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tailor Resume — Resume Tailor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav>
+  <a href="/dashboard" class="nav-brand">Resume Tailor</a>
+  <div class="nav-links">
+    <a href="/dashboard">Home</a>
+    <a href="/tailor" class="active">Tailor</a>
+    <a href="/improve">Improve</a>
+    <a href="/history">History</a>
+    <a href="/profile">Profile</a>
+    <a href="#" onclick="logout()">Sign Out</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div id="alert-box"></div>
+
+  <div style="margin-bottom:24px;">
+    <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Tailor Your Resume</h1>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Paste a job description and get a tailored resume in seconds.</p>
+  </div>
+
+  <div class="card">
+    <label>Job Title (optional)</label>
+    <input type="text" id="job-title" placeholder="e.g. Senior Financial Analyst">
+
+    <label>Company (optional)</label>
+    <input type="text" id="company" placeholder="e.g. Blackstone">
+
+    <label>Job Description *</label>
+    <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:200px;"></textarea>
+
+    <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()">
+      Generate Tailored Resume
+    </button>
+  </div>
+
+  <!-- Result panel (hidden until generated) -->
+  <div class="card" id="result-panel" style="display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h2 style="margin-bottom:0;">Your Tailored Resume</h2>
+      <button class="btn btn-success" id="btn-download" onclick="downloadPDF()">
+        Download PDF
+      </button>
+    </div>
+
+    <pre id="result-text" style="
+      font-family:'Inter',sans-serif;
+      font-size:13px;
+      line-height:1.6;
+      color:var(--text);
+      white-space:pre-wrap;
+      background:var(--light);
+      padding:20px;
+      border-radius:8px;
+      border:1px solid var(--border);
+      max-height:500px;
+      overflow-y:auto;
+    "></pre>
+
+    <p style="font-size:12px;color:var(--muted);margin-top:10px;">
+      This version is saved to your history. Download the PDF to get the formatted two-column version.
+    </p>
+  </div>
+
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  requireAuth();
+
+  let currentRecordId = null;
+
+  async function tailorResume() {
+    const jd      = document.getElementById("jd").value.trim();
+    const title   = document.getElementById("job-title").value.trim();
+    const company = document.getElementById("company").value.trim();
+
+    if (!jd) return showAlert("alert-box", "Please paste a job description.", "error");
+
+    const btn = document.getElementById("btn-tailor");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> Generating...`;
+
+    try {
+      const res = await apiFetch("/api/tailor/", {
+        method: "POST",
+        body: JSON.stringify({ job_description: jd, job_title: title, company })
+      });
+
+      currentRecordId = res.id;
+      document.getElementById("result-text").textContent = res.tailored_content;
+      document.getElementById("result-panel").style.display = "block";
+      document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "Generate Tailored Resume";
+    }
+  }
+
+  async function downloadPDF() {
+    if (!currentRecordId) return;
+    const btn = document.getElementById("btn-download");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner" style="border-top-color:white;border-color:rgba(255,255,255,0.3)"></span> Building PDF...`;
+    try {
+      const res = await fetch(`/api/tailor/${currentRecordId}/pdf`, {
+        headers: { "Authorization": `Bearer ${getToken()}` }
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "tailored_resume.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "Download PDF";
+    }
+  }
+</script>
+</body>
+</html>
