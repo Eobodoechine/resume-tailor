@@ -17,7 +17,7 @@ def generate_pdf(tailored_text: str, profile: dict) -> bytes:
     """
     parsed = _parse_resume_text(tailored_text, profile)
 
-    env = Environment(loader=FileSystemLoader(TEMPLATES_DIR))
+    env = Environment(loader=FileSystemLoader(TEMPLATES_DIR), autoescape=True)
     template = env.get_template("resume.html")
     html_content = template.render(**parsed)
 
