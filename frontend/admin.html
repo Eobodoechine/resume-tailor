@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — Resume Tailor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav>
+  <a href="/dashboard" class="nav-brand">Resume Tailor</a>
+  <div class="nav-links">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/admin-panel" class="active">Admin</a>
+    <a href="#" onclick="logout()">Sign Out</a>
+  </div>
+</nav>
+
+<div class="container-wide">
+  <div id="alert-box"></div>
+
+  <div style="margin-bottom:24px;">
+    <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Access Requests</h1>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Approve or reject people requesting access. Approving sends them a magic link immediately.</p>
+  </div>
+
+  <!-- Filter tabs -->
+  <div style="display:flex;gap:8px;margin-bottom:16px;">
+    <button class="btn btn-navy"    id="filter-pending"  onclick="loadRequests('pending')">Pending</button>
+    <button class="btn btn-outline" id="filter-approved" onclick="loadRequests('approved')">Approved</button>
+    <button class="btn btn-outline" id="filter-rejected" onclick="loadRequests('rejected')">Rejected</button>
+    <button class="btn btn-outline" id="filter-all"      onclick="loadRequests('all')">All</button>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Reason</th>
+          <th>Requested</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="requests-body">
+        <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Users section -->
+  <div style="margin-top:32px;margin-bottom:16px;">
+    <h2 style="font-size:18px;font-weight:600;color:var(--navy)">Active Users</h2>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Member Since</th>
+        </tr>
+      </thead>
+      <tbody id="users-body">
+        <tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px;">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  requireAuth();
+
+  let currentFilter = "pending";
+
+  async function loadRequests(filter = "pending") {
+    currentFilter = filter;
+    ["pending","approved","rejected","all"].forEach(f => {
+      document.getElementById(`filter-${f}`).className =
+        f === filter ? "btn btn-navy" : "btn btn-outline";
+    });
+
+    try {
+      const data = await apiFetch(`/api/admin/requests?status=${filter}`);
+      const tbody = document.getElementById("requests-body");
+
+      if (!data.length) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">No ${filter} requests</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.map(r => `
+        <tr>
+          <td style="font-weight:500">${r.full_name || "—"}</td>
+          <td>${r.email}</td>
+          <td style="color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.reason || "—"}</td>
+          <td style="color:var(--muted)">${fmtDate(r.requested_at)}</td>
+          <td><span class="badge badge-${r.status}">${r.status}</span></td>
+          <td style="text-align:right;white-space:nowrap;">
+            ${r.status === "pending" ? `
+              <button class="btn btn-success" style="font-size:12px;padding:5px 10px;margin-right:6px"
+                onclick="approve('${r.id}')">Approve</button>
+              <button class="btn btn-danger" style="font-size:12px;padding:5px 10px"
+                onclick="reject('${r.id}')">Reject</button>
+            ` : "—"}
+          </td>
+        </tr>`).join("");
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  async function approve(id) {
+    try {
+      const res = await apiFetch("/api/admin/approve", { method: "POST", body: JSON.stringify({ request_id: id }) });
+      showAlert("alert-box", `✓ ${res.message}`, "success");
+      loadRequests(currentFilter);
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  async function reject(id) {
+    if (!confirm("Reject this request?")) return;
+    try {
+      await apiFetch("/api/admin/reject", { method: "POST", body: JSON.stringify({ request_id: id }) });
+      loadRequests(currentFilter);
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    }
+  }
+
+  async function loadUsers() {
+    try {
+      const users = await apiFetch("/api/admin/users");
+      const tbody = document.getElementById("users-body");
+      if (!users.length) {
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;">No users yet</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = users.map(u => `
+        <tr>
+          <td style="font-weight:500">${u.full_name || "—"}</td>
+          <td>${u.email}</td>
+          <td style="color:var(--muted)">${fmtDate(u.created_at)}</td>
+        </tr>`).join("");
+    } catch (e) {}
+  }
+
+  loadRequests("pending");
+  loadUsers();
+</script>
+</body>
+</html>
