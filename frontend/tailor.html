@@ -6,6 +6,159 @@
   <title>Tailor Resume — Resume Tailor</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* ── JD input toggle ── */
+    .jd-toggle {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .jd-toggle button {
+      padding: 6px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--light);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .jd-toggle button.active {
+      background: var(--navy);
+      color: #fff;
+      border-color: var(--navy);
+    }
+    .url-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .url-row input {
+      flex: 1;
+      margin-bottom: 0;
+    }
+    .btn-fetch {
+      padding: 10px 16px;
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+    .btn-fetch:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    /* ── Inline refinement chat ── */
+    #refine-panel {
+      margin-top: 24px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    #refine-panel .refine-header {
+      background: var(--navy);
+      color: #fff;
+      padding: 14px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #refine-panel .refine-header span.badge {
+      background: rgba(255,255,255,0.2);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    #refine-messages {
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+      background: var(--light);
+    }
+    .msg {
+      max-width: 88%;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .msg.coach {
+      background: #fff;
+      border: 1px solid var(--border);
+      align-self: flex-start;
+      color: var(--text);
+    }
+    .msg.user {
+      background: var(--navy);
+      color: #fff;
+      align-self: flex-end;
+    }
+    .msg.update-notice {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      color: #2e7d32;
+      font-size: 12px;
+      font-weight: 500;
+      align-self: stretch;
+      max-width: 100%;
+      text-align: center;
+    }
+    #refine-input-row {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: #fff;
+    }
+    #refine-input {
+      flex: 1;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      resize: none;
+      outline: none;
+    }
+    #refine-input:focus { border-color: var(--navy); }
+    #btn-refine-send {
+      padding: 9px 16px;
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #btn-refine-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .typing-dots span {
+      display: inline-block;
+      width: 6px; height: 6px;
+      background: var(--muted);
+      border-radius: 50%;
+      margin: 0 2px;
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-5px); }
+    }
+  </style>
 </head>
 <body>
 
@@ -26,7 +179,7 @@
 
   <div style="margin-bottom:24px;">
     <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Tailor Your Resume</h1>
-    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Paste a job description and get a tailored resume in seconds.</p>
+    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Paste a job description or drop in a URL — get a tailored resume and live feedback in one shot.</p>
   </div>
 
   <div class="card">
@@ -36,10 +189,29 @@
     <label>Company (optional)</label>
     <input type="text" id="company" placeholder="e.g. Blackstone">
 
+    <!-- JD input with paste/URL toggle -->
     <label>Job Description *</label>
-    <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:200px;"></textarea>
+    <div class="jd-toggle">
+      <button id="btn-mode-paste" class="active" onclick="setMode('paste')">Paste text</button>
+      <button id="btn-mode-url" onclick="setMode('url')">Use URL</button>
+    </div>
 
-    <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()">
+    <!-- Paste mode -->
+    <div id="jd-paste-area">
+      <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:180px;"></textarea>
+    </div>
+
+    <!-- URL mode -->
+    <div id="jd-url-area" style="display:none;">
+      <div class="url-row">
+        <input type="url" id="jd-url" placeholder="https://jobs.lever.co/company/job-id">
+        <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch JD</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px;">Works with most job boards (Lever, Greenhouse, LinkedIn, Indeed). Some require a login and can't be fetched automatically.</p>
+      <textarea id="jd-fetched" placeholder="Fetched job description will appear here — you can edit it before generating." style="min-height:140px;margin-top:10px;display:none;"></textarea>
+    </div>
+
+    <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()" style="margin-top:16px;">
       Generate Tailored Resume
     </button>
   </div>
@@ -63,13 +235,25 @@
       padding:20px;
       border-radius:8px;
       border:1px solid var(--border);
-      max-height:500px;
+      max-height:400px;
       overflow-y:auto;
     "></pre>
 
     <p style="font-size:12px;color:var(--muted);margin-top:10px;">
-      This version is saved to your history. Download the PDF to get the formatted two-column version.
+      Saved to history. Download PDF to get the formatted two-column version.
     </p>
+
+    <!-- Inline refinement chat -->
+    <div id="refine-panel" style="display:none;">
+      <div class="refine-header">
+        AI Feedback <span class="badge">Live</span>
+      </div>
+      <div id="refine-messages"></div>
+      <div id="refine-input-row">
+        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume..."></textarea>
+        <button id="btn-refine-send" onclick="sendRefine()">Send</button>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -79,13 +263,60 @@
   requireAuth();
 
   let currentRecordId = null;
+  let refineHistory = [];
+  let jdMode = "paste";
+
+  // ── JD mode toggle ─────────────────────────────────────────────────────────
+
+  function setMode(mode) {
+    jdMode = mode;
+    document.getElementById("btn-mode-paste").classList.toggle("active", mode === "paste");
+    document.getElementById("btn-mode-url").classList.toggle("active", mode === "url");
+    document.getElementById("jd-paste-area").style.display = mode === "paste" ? "block" : "none";
+    document.getElementById("jd-url-area").style.display = mode === "url" ? "block" : "none";
+  }
+
+  function getJDText() {
+    if (jdMode === "paste") {
+      return document.getElementById("jd").value.trim();
+    } else {
+      return document.getElementById("jd-fetched").value.trim();
+    }
+  }
+
+  async function fetchJD() {
+    const url = document.getElementById("jd-url").value.trim();
+    if (!url) return showAlert("alert-box", "Please enter a URL.", "error");
+
+    const btn = document.getElementById("btn-fetch");
+    btn.disabled = true;
+    btn.textContent = "Fetching...";
+
+    try {
+      const res = await apiFetch("/api/tailor/fetch-jd", {
+        method: "POST",
+        body: JSON.stringify({ url })
+      });
+      const ta = document.getElementById("jd-fetched");
+      ta.value = res.text;
+      ta.style.display = "block";
+      showAlert("alert-box", "Job description fetched — review and edit if needed, then click Generate.", "success");
+    } catch (e) {
+      showAlert("alert-box", e.message, "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Fetch JD";
+    }
+  }
+
+  // ── Tailor ─────────────────────────────────────────────────────────────────
 
   async function tailorResume() {
-    const jd      = document.getElementById("jd").value.trim();
+    const jd      = getJDText();
     const title   = document.getElementById("job-title").value.trim();
     const company = document.getElementById("company").value.trim();
 
-    if (!jd) return showAlert("alert-box", "Please paste a job description.", "error");
+    if (!jd) return showAlert("alert-box", "Please add a job description (paste text or fetch from URL).", "error");
 
     const btn = document.getElementById("btn-tailor");
     btn.disabled = true;
@@ -98,9 +329,15 @@
       });
 
       currentRecordId = res.id;
+      refineHistory = [];
+
       document.getElementById("result-text").textContent = res.tailored_content;
       document.getElementById("result-panel").style.display = "block";
       document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+
+      // Kick off the inline refinement chat automatically
+      startRefineChat();
+
     } catch (e) {
       showAlert("alert-box", e.message, "error");
     } finally {
@@ -108,6 +345,108 @@
       btn.innerHTML = "Generate Tailored Resume";
     }
   }
+
+  // ── Refinement chat ────────────────────────────────────────────────────────
+
+  function addMessage(text, role) {
+    const div = document.createElement("div");
+    div.className = "msg " + role;
+    div.textContent = text;
+    document.getElementById("refine-messages").appendChild(div);
+    div.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return div;
+  }
+
+  function addTypingIndicator() {
+    const div = document.createElement("div");
+    div.className = "msg coach";
+    div.id = "typing-indicator";
+    div.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
+    document.getElementById("refine-messages").appendChild(div);
+    div.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return div;
+  }
+
+  async function startRefineChat() {
+    document.getElementById("refine-panel").style.display = "block";
+    addTypingIndicator();
+
+    try {
+      const res = await apiFetch(`/api/tailor/${currentRecordId}/refine`, {
+        method: "POST",
+        body: JSON.stringify({ message: "start", history: [] })
+      });
+
+      document.getElementById("typing-indicator")?.remove();
+      refineHistory.push({ role: "user", content: "start" });
+      refineHistory.push({ role: "assistant", content: res.reply });
+      addMessage(res.reply, "coach");
+
+      if (res.updated_content) {
+        document.getElementById("result-text").textContent = res.updated_content;
+        const notice = document.createElement("div");
+        notice.className = "msg update-notice";
+        notice.textContent = "✓ Resume updated above";
+        document.getElementById("refine-messages").appendChild(notice);
+      }
+    } catch (e) {
+      document.getElementById("typing-indicator")?.remove();
+      addMessage("Couldn't load feedback — you can still download your PDF.", "coach");
+    }
+  }
+
+  async function sendRefine() {
+    if (!currentRecordId) return;
+    const input = document.getElementById("refine-input");
+    const message = input.value.trim();
+    if (!message) return;
+
+    const btn = document.getElementById("btn-refine-send");
+    btn.disabled = true;
+    input.value = "";
+
+    refineHistory.push({ role: "user", content: message });
+    addMessage(message, "user");
+    addTypingIndicator();
+
+    try {
+      const res = await apiFetch(`/api/tailor/${currentRecordId}/refine`, {
+        method: "POST",
+        body: JSON.stringify({ message, history: refineHistory.slice(0, -1) })
+      });
+
+      document.getElementById("typing-indicator")?.remove();
+      refineHistory.push({ role: "assistant", content: res.reply });
+      addMessage(res.reply, "coach");
+
+      if (res.updated_content) {
+        document.getElementById("result-text").textContent = res.updated_content;
+        const notice = document.createElement("div");
+        notice.className = "msg update-notice";
+        notice.textContent = "✓ Resume updated above";
+        document.getElementById("refine-messages").appendChild(notice);
+        notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    } catch (e) {
+      document.getElementById("typing-indicator")?.remove();
+      addMessage("Something went wrong — please try again.", "coach");
+      refineHistory.pop();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Allow Enter to send (Shift+Enter for newline)
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("refine-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendRefine();
+      }
+    });
+  });
+
+  // ── PDF download ───────────────────────────────────────────────────────────
 
   async function downloadPDF() {
     if (!currentRecordId) return;
