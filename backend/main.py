@@ -8,10 +8,17 @@ from routes import auth, profile, resumes, master, tailor, admin
 
 app = FastAPI(title="Resume Tailor", version="1.0.0")
 
-# CORS — allow the frontend to call the API
+# CORS — allow_origins=["*"] with allow_credentials=True is invalid per spec.
+# Restrict to the production domain and local dev.
+ALLOWED_ORIGINS = [
+    "https://resume-tailor-ogop.onrender.com",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
