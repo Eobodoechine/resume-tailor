@@ -1,0 +1,18 @@
+from supabase import create_client, Client
+from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
+
+# Standard client (respects RLS — use for user-scoped operations)
+def get_client(user_token: str) -> Client:
+    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    client.auth.set_session(user_token, "")
+    return client
+
+# Admin client (bypasses RLS — use only for admin operations)
+def get_admin_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+# Verify a bearer token and return the user object
+def get_user_from_token(token: str):
+    admin = get_admin_client()
+    result = admin.auth.get_user(token)
+    return result.user if result else None
