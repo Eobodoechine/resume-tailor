@@ -7,8 +7,11 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Optional
 import re
+import ipaddress
+import socket
 import requests as http_requests
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 from services.supabase_client import get_admin_client, get_user_from_token
 from services import claude as claude_service
 from services.pdf_generator import generate_pdf
@@ -124,10 +127,34 @@ def tailor_resume(body: TailorRequest, authorization: str = Header(None)):
     }
 
 
+def _validate_fetch_url(url: str):
+    """Block SSRF: reject non-http(s) schemes, private IPs, and loopback addresses."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL — no hostname found.")
+    # Reject known internal hostnames
+    blocked_hosts = {"localhost", "metadata.google.internal"}
+    if hostname.lower() in blocked_hosts:
+        raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
+    # Resolve and block private/loopback IP ranges
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # DNS failure will be caught by requests.get() below
+
+
 @router.post("/fetch-jd")
 def fetch_jd(body: FetchJDRequest, authorization: str = Header(None)):
     """Fetch and extract plain text from a job posting URL."""
     _require_user(authorization)
+    _validate_fetch_url(body.url)
     try:
         resp = http_requests.get(
             body.url,
