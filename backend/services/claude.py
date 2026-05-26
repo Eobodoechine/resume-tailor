@@ -19,15 +19,33 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     prompt = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
 Your job is to synthesize them into a single, comprehensive MASTER RESUME in structured plain text.
 
-Rules:
+CONTENT RULES:
 - Include ALL experience, skills, education, certifications, and achievements found across all files
 - Remove duplicates but keep the most detailed version of each entry
 - Do NOT invent or embellish anything — only use what is explicitly stated
-- Organize into clear sections: SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (if present)
-- Under each role: format the header as "Job Title | Company Name | Start – End" (use " | " as separator)
-- Follow each role header immediately with bullet points starting with "•"
 - Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
-- Output plain text only — no markdown headers with #, no asterisks for bullets, use ALL CAPS for section headers
+
+STRICT OUTPUT FORMAT:
+
+1. Header (first lines, before any section):
+{contact_block}
+
+2. Section headers: EXACTLY these words in ALL CAPS on their own line:
+   SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (only if present)
+
+3. EXPERIENCE section:
+   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
+   - NO sub-section headers inside a role — only bullet points
+   - Every bullet starts with "•"
+
+4. SKILLS section — CRITICAL:
+   - Each category on ONE line: Category Name: item1, item2, item3
+   - Example: Systems & Tools: CoStar, Oracle EBS, Coupa, Power Automate
+   - Do NOT write multi-line paragraphs for skills
+
+5. EDUCATION:
+   - Only actual degrees from the resume: Degree | School | Year
+   - If no formal degree exists in the source material, omit EDUCATION entirely
 
 Contact info to include at the top:
 {contact_block}
@@ -35,7 +53,7 @@ Contact info to include at the top:
 Resume files to synthesize:
 {combined}
 
-Output the complete master resume now:"""
+Output the complete master resume now, following the STRICT OUTPUT FORMAT above:"""
 
     message = client.messages.create(
         model=CLAUDE_MODEL,
@@ -59,20 +77,48 @@ def _build_tailor_prompt(
     """
     return f"""You are an expert resume writer and career strategist. Your task is to tailor {name}'s master resume for {target}.
 
-Rules:
+CONTENT RULES:
 - Select and emphasize the experience, skills, and achievements MOST relevant to the job description
 - Reorder bullet points within each role to lead with the most relevant ones
 - Adjust the summary to directly address what the employer is looking for
 - Do NOT fabricate, invent, or add anything not in the master resume
 - Do NOT remove entire roles — keep all jobs but trim less-relevant bullets if needed
 - Match terminology from the job description naturally (don't keyword-stuff)
-- Format each role header as "Job Title | Company Name | Start – End" (use " | " as separator)
-- Follow each role header immediately with bullet points starting with "•"
-- Output plain text only — no markdown, use ALL CAPS for section headers
 - Keep it to one page worth of content (approximately 600-750 words of body text)
 
-Contact info to include at the top:
+STRICT OUTPUT FORMAT — follow exactly or the PDF renderer will break:
+
+1. HEADER (first 1-2 lines, before any section):
 {contact_block}
+
+2. Section headers must be EXACTLY these words in ALL CAPS on their own line:
+   SUMMARY
+   EXPERIENCE
+   SKILLS
+   EDUCATION
+   CERTIFICATIONS  (only if present in master)
+
+3. EXPERIENCE section rules:
+   - Each role header MUST use exactly this format with TWO pipe characters:
+     Job Title | Company Name | Month Year – Month Year
+     Example: Property Tax Specialist | United Parcel Service (UPS) | June 2022 – Present
+   - NO sub-section headers (like "WORKFLOW DISCOVERY" or "KEY ACHIEVEMENTS") — only bullet points
+   - Every bullet point MUST start with "•" character
+   - Do not use "-" or "*" for bullets
+
+4. SKILLS section rules — CRITICAL:
+   - Each skill category goes on ONE line using this EXACT format:
+     Category Name: item1, item2, item3, item4
+   - Example:
+     Systems & Tools: CoStar, Oracle EBS, Coupa, Power Automate, SharePoint
+     Process Skills: Workflow Discovery, Stakeholder Communication, Process Automation
+   - Do NOT write multi-line skill paragraphs
+   - Do NOT use ALL CAPS for the category names in this section
+
+5. EDUCATION section rules:
+   - Copy ONLY actual degrees/certifications from the master resume
+   - Each entry on its own line: Degree | School | Year
+   - If no formal degree is listed in the master resume, omit the EDUCATION section entirely
 
 MASTER RESUME:
 {master_resume}
@@ -80,7 +126,7 @@ MASTER RESUME:
 JOB DESCRIPTION:
 {job_description}
 
-Output the tailored resume now:"""
+Output the tailored resume now, following the STRICT OUTPUT FORMAT above:"""
 
 
 def tailor_resume(master_resume: str, job_description: str, profile: dict, job_title: str = "", company: str = "") -> str:
