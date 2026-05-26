@@ -25,6 +25,7 @@ SUPABASE_URL       = _require("SUPABASE_URL")
 SUPABASE_ANON_KEY  = _require("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = _require("SUPABASE_SERVICE_KEY")  # admin operations
 ANTHROPIC_API_KEY  = _require("ANTHROPIC_API_KEY")
+RESEND_API_KEY     = os.getenv("RESEND_API_KEY", "")   # optional: enables Resend email delivery
 ADMIN_EMAIL        = os.environ.get("ADMIN_EMAIL", "enollc21@gmail.com")
 
 CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")

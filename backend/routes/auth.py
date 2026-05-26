@@ -3,8 +3,9 @@ Auth routes: request access, magic link login, session cookie management, logout
 """
 from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel, EmailStr
+import httpx
 from services.supabase_client import get_admin_client, get_anon_client, get_user_from_token
-from config import ADMIN_EMAIL, COOKIE_SECURE, COOKIE_MAX_AGE
+from config import ADMIN_EMAIL, COOKIE_SECURE, COOKIE_MAX_AGE, RESEND_API_KEY
 from dependencies.auth import COOKIE_NAME
 from limiter import limiter
 
@@ -144,9 +145,82 @@ APP_URL = "https://resume-tailor-ogop.onrender.com"
 
 def _send_magic_link(admin_client, email: str):
     """
-    Send a magic link email via Supabase OTP.
-    Uses the anon client so Supabase actually delivers the email —
-    admin generate_link() only returns a token, it never sends email.
+    Send a magic link email.
+
+    Strategy (in order of preference):
+    1. Resend HTTP API — if RESEND_API_KEY is set, generate a Supabase magic link
+       URL via the admin API and deliver it through Resend's reliable HTTP endpoint.
+       This bypasses Supabase's SMTP layer entirely, giving us Resend's free-tier
+       3,000 emails/month with no 2/hour cap.
+    2. Supabase anon OTP — fallback when RESEND_API_KEY is absent. Uses Supabase's
+       built-in mailer (2/hour cap on free plan).
+    """
+    if RESEND_API_KEY:
+        _send_via_resend(admin_client, email)
+    else:
+        _send_via_supabase_otp(email)
+
+
+def _send_via_resend(admin_client, email: str):
+    """
+    Generate a Supabase magic link URL then deliver it via Resend's HTTP API.
+    The link URL contains the access_token that the frontend exchanges for a session.
+    """
+    try:
+        # Step 1: Generate a magic link URL via the admin API
+        link_resp = admin_client.auth.admin.generate_link({
+            "type": "magiclink",
+            "email": email,
+            "options": {"redirect_to": f"{APP_URL}/dashboard"},
+        })
+        magic_url = link_resp.properties.action_link
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate magic link: {str(e)}")
+
+    try:
+        # Step 2: Send it via Resend's HTTP API
+        html_body = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;">
+          <h2 style="color:#1a2e4a;margin-bottom:8px;">Sign in to Resume Tailor</h2>
+          <p style="color:#555;margin-bottom:24px;">Click the button below to sign in. This link expires in 1 hour.</p>
+          <a href="{magic_url}"
+             style="display:inline-block;background:#1a2e4a;color:white;text-decoration:none;
+                    padding:12px 24px;border-radius:6px;font-weight:600;">
+            Sign In
+          </a>
+          <p style="color:#999;font-size:12px;margin-top:24px;">
+            If you didn't request this, you can safely ignore this email.
+          </p>
+        </div>
+        """
+        resp = httpx.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": "Resume Tailor <onboarding@resend.dev>",
+                "to": [email],
+                "subject": "Your sign-in link for Resume Tailor",
+                "html": html_body,
+            },
+            timeout=10.0,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send magic link email: {resp.text}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send magic link: {str(e)}")
+
+
+def _send_via_supabase_otp(email: str):
+    """
+    Fallback: send a magic link via Supabase's built-in mailer (2/hour on free plan).
     """
     try:
         anon = get_anon_client()
