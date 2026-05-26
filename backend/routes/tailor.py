@@ -2,20 +2,25 @@
 Tailor routes: generate a tailored resume from master + JD, save history, download PDF.
 Also supports: fetching a JD from a URL, and inline refinement chat on a tailored resume.
 """
-from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
+import json as _json
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal, Optional
+import asyncio
 import re
+import json
 import ipaddress
 import socket
-import requests as http_requests
+import httpx
 from html.parser import HTMLParser
 from urllib.parse import urlparse
-from services.supabase_client import get_admin_client, get_user_from_token
+from dependencies.auth import require_user, AuthContext
+from services.supabase_client import get_client, get_admin_client
 from services import claude as claude_service
 from services.pdf_generator import generate_pdf
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from limiter import limiter
 import anthropic
 
 router = APIRouter(prefix="/api/tailor", tags=["tailor"])
@@ -23,18 +28,6 @@ ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 MAX_JD_LENGTH = 12_000   # ~3,000 tokens
 MAX_HISTORY_TURNS = 20
-
-
-# ── Auth helper ───────────────────────────────────────────────────────────────
-
-def _require_user(authorization: str):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ", 1)[1]
-    user = get_user_from_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user
 
 
 def _safe_filename_part(value: str, fallback: str) -> str:
@@ -45,13 +38,30 @@ def _safe_filename_part(value: str, fallback: str) -> str:
 # ── HTML stripping ────────────────────────────────────────────────────────────
 
 class _HTMLStripper(HTMLParser):
+    """Strip HTML tags and return visible text only.
+
+    Skips content inside <script>, <style>, <nav>, <header>, <footer>,
+    and <noscript> tags — these contain code/chrome, not job description text.
+    """
+    SKIP_TAGS = {"script", "style", "nav", "header", "footer", "noscript", "aside"}
+
     def __init__(self):
         super().__init__()
         self.reset()
         self._fed: list[str] = []
+        self._skip_depth: int = 0
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag.lower() in self.SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str):
+        if tag.lower() in self.SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
 
     def handle_data(self, d: str):
-        self._fed.append(d)
+        if self._skip_depth == 0:
+            self._fed.append(d)
 
     def get_data(self) -> str:
         return " ".join(self._fed)
@@ -62,6 +72,58 @@ def _strip_html(html: str) -> str:
     stripper.feed(html)
     text = stripper.get_data()
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_jsonld_job(html: str) -> str:
+    """
+    Try to pull structured job data from JSON-LD schema.org/JobPosting blocks.
+
+    Many ATS platforms (Greenhouse, Lever, Workday, Jobvite) embed the full
+    job description in a <script type="application/ld+json"> block even when
+    the visible page is client-rendered. This lets us bypass the JS problem.
+    """
+    pattern = re.compile(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        re.IGNORECASE | re.DOTALL
+    )
+    for match in pattern.finditer(html):
+        try:
+            data = json.loads(match.group(1).strip())
+            # May be a single object or a @graph / list — search for a JobPosting
+            if isinstance(data, list):
+                # Many ATS platforms wrap multiple types in an array; find the job
+                data = next(
+                    (d for d in data
+                     if isinstance(d, dict) and d.get("@type") in ("JobPosting", "jobPosting")),
+                    None
+                )
+                if data is None:
+                    continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("@type") not in ("JobPosting", "jobPosting"):
+                continue
+
+            parts: list[str] = []
+            if data.get("title"):
+                parts.append(f"Job Title: {data['title']}")
+            if isinstance(data.get("hiringOrganization"), dict):
+                org_name = data["hiringOrganization"].get("name")
+                if org_name:
+                    parts.append(f"Company: {org_name}")
+            if data.get("description"):
+                # Description may itself contain HTML — strip it
+                desc_clean = _strip_html(data["description"])
+                parts.append(desc_clean)
+            if data.get("qualifications"):
+                parts.append(f"Qualifications: {_strip_html(str(data['qualifications']))}")
+            if data.get("responsibilities"):
+                parts.append(f"Responsibilities: {_strip_html(str(data['responsibilities']))}")
+            if parts:
+                return "\n\n".join(parts)
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
+            continue
+    return ""
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -76,26 +138,40 @@ class FetchJDRequest(BaseModel):
     url: str = Field(..., max_length=2000)
 
 
+class HistoryMessage(BaseModel):
+    """
+    A single turn in the refine-chat conversation.
+
+    Restricts `role` to the two values Claude actually accepts as conversation
+    turns.  Rejects "system", "tool", and arbitrary dict shapes — closing the
+    prompt-injection surface where a caller could inject a system-level message
+    into the conversation history forwarded to Claude.
+    """
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=4000)
+
+
 class RefineMessage(BaseModel):
     message: str = Field(..., max_length=4000)
-    history: list[dict] = []
+    history: list[HistoryMessage] = Field(default=[], max_length=40)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/")
-def tailor_resume(body: TailorRequest, authorization: str = Header(None)):
+@limiter.limit("10/minute")
+def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depends(require_user)):
     """Tailor the master resume to a JD. Saves to history."""
-    user = _require_user(authorization)
+    db = get_client(ctx.token)
     admin = get_admin_client()
 
-    master_result = admin.table("master_resumes").select("content").eq("user_id", str(user.id)).execute()
+    master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     if not master_result.data or not master_result.data[0]["content"]:
         raise HTTPException(status_code=400, detail="No master resume found. Upload files and synthesize first.")
 
     master_content = master_result.data[0]["content"]
 
-    profile_result = admin.table("profiles").select("*").eq("id", str(user.id)).execute()
+    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
     try:
@@ -109,8 +185,10 @@ def tailor_resume(body: TailorRequest, authorization: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
+    # Use admin client for the insert — RLS insert policy may require service role
+    # depending on how the profiles table policy is configured.
     insert_result = admin.table("tailored_resumes").insert({
-        "user_id": str(user.id),
+        "user_id": str(ctx.user.id),
         "job_title": body.job_title,
         "company": body.company,
         "job_description": body.job_description,
@@ -147,73 +225,236 @@ def _validate_fetch_url(url: str):
     except HTTPException:
         raise
     except Exception:
-        pass  # DNS failure will be caught by requests.get() below
+        pass  # DNS failure will be caught by httpx below
+
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 @router.post("/fetch-jd")
-def fetch_jd(body: FetchJDRequest, authorization: str = Header(None)):
-    """Fetch and extract plain text from a job posting URL."""
-    _require_user(authorization)
-    _validate_fetch_url(body.url)
+@limiter.limit("30/minute")
+async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = Depends(require_user)):
+    """Fetch and extract plain text from a job posting URL.
+
+    Strategy (in order):
+    1. Fetch raw HTML with a browser-like User-Agent via async httpx (non-blocking).
+    2. Try JSON-LD schema.org/JobPosting extraction — works for Greenhouse,
+       Lever, Workday, Jobvite even when the page is client-rendered.
+    3. Fall back to full HTML stripping (works for Indeed, company career pages).
+    4. Raise a clear, actionable error if content is still too short.
+    """
+    # _validate_fetch_url calls socket.gethostbyname() which is a blocking DNS
+    # lookup. Run it in a thread pool so it doesn't stall the event loop.
+    await asyncio.to_thread(_validate_fetch_url, body.url)
     try:
-        resp = http_requests.get(
-            body.url,
-            timeout=12,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ResumeTailor/1.0)"},
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-        text = _strip_html(resp.text)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(
+                body.url,
+                headers={
+                    "User-Agent": _BROWSER_UA,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            resp.raise_for_status()
+            raw_html = resp.text
+
+        # Strategy 1: JSON-LD structured data (handles JS-rendered ATS platforms)
+        text = _extract_jsonld_job(raw_html)
+
+        # Strategy 2: Full HTML strip (server-rendered pages, company career sites)
+        if len(text) < 100:
+            text = _strip_html(raw_html)
+
         if len(text) < 100:
             raise HTTPException(
                 status_code=400,
-                detail="Page content too short — the URL may require a login or JavaScript to load."
+                detail=(
+                    "Couldn't extract job content from that URL. "
+                    "This usually means the page requires JavaScript or a login. "
+                    "Try copying the job description text and pasting it directly."
+                )
             )
         return {"text": text[:MAX_JD_LENGTH]}
     except HTTPException:
         raise
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=400, detail="The page took too long to respond. Try pasting the job description text instead.")
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status == 403:
+            raise HTTPException(status_code=400, detail="The site blocked the request (403 Forbidden). Paste the job description text instead.")
+        raise HTTPException(status_code=400, detail=f"The site returned an error ({status}). Try pasting the text directly.")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not fetch URL: {str(e)}")
+
+
+@router.post("/stream")
+@limiter.limit("10/minute")
+def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext = Depends(require_user)):
+    """
+    Streaming variant of POST /api/tailor/.
+
+    Returns an SSE stream of text chunks so the frontend can render the
+    resume progressively instead of waiting 10-30s for a blocking response.
+
+    SSE event format:
+        data: {"chunk": "text"}\n\n      — partial resume text
+        data: {"done": true, "id": "…"}\n\n — stream complete, DB record ID included
+        data: {"error": "msg"}\n\n        — Claude API error mid-stream
+    """
+    db = get_client(ctx.token)
+    admin = get_admin_client()
+
+    master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
+    if not master_result.data or not master_result.data[0]["content"]:
+        raise HTTPException(status_code=400, detail="No master resume found. Upload files and synthesize first.")
+
+    master_content = master_result.data[0]["content"]
+    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+    profile = profile_result.data[0] if profile_result.data else {}
+
+    def _generate():
+        full_chunks: list[str] = []
+        try:
+            for chunk in claude_service.stream_tailor_resume(
+                master_resume=master_content,
+                job_description=body.job_description,
+                profile=profile,
+                job_title=body.job_title or "",
+                company=body.company or "",
+            ):
+                full_chunks.append(chunk)
+                yield f"data: {_json.dumps({'chunk': chunk})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'error': str(e)})}\n\n"
+            return
+
+        # Save completed resume to DB after streaming finishes
+        tailored_text = "".join(full_chunks)
+        try:
+            insert_result = admin.table("tailored_resumes").insert({
+                "user_id": str(ctx.user.id),
+                "job_title": body.job_title,
+                "company": body.company,
+                "job_description": body.job_description,
+                "tailored_content": tailored_text,
+            }).execute()
+            record_id = insert_result.data[0]["id"] if insert_result.data else None
+        except Exception:
+            record_id = None
+
+        yield f"data: {_json.dumps({'done': True, 'id': record_id})}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx proxy buffering
+        },
+    )
 
 
 # NOTE: /history must be before /{record_id}/... to prevent FastAPI matching
 # the literal string "history" as a record_id path parameter.
 @router.get("/history")
-def get_history(authorization: str = Header(None)):
-    """Return all tailored resume records for the user."""
-    user = _require_user(authorization)
-    admin = get_admin_client()
-    result = admin.table("tailored_resumes") \
-        .select("id, job_title, company, created_at") \
-        .eq("user_id", str(user.id)) \
-        .order("created_at", desc=True) \
+@limiter.limit("60/minute")
+def get_history(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    ctx: AuthContext = Depends(require_user),
+):
+    """
+    Return paginated tailored resume records for the user.
+
+    Query params:
+        limit  — page size (default 50, max 200)
+        offset — number of records to skip (default 0)
+
+    Response:
+        {
+            "items":    [...],   # records for this page
+            "total":    N,       # total record count for the user
+            "limit":    50,
+            "offset":   0,
+            "has_more": true     # true if more records exist beyond this page
+        }
+    """
+    limit = min(max(1, limit), 200)   # clamp: 1 ≤ limit ≤ 200
+    offset = max(0, offset)
+
+    db = get_client(ctx.token)
+
+    # Get total count (separate query — Supabase returns count alongside data
+    # only when count="exact" is passed; doing it separately keeps the query readable).
+    count_result = db.table("tailored_resumes") \
+        .select("id", count="exact") \
+        .eq("user_id", str(ctx.user.id)) \
         .execute()
-    return result.data
+    # Use isinstance so test mocks (MagicMock, not None) don't slip past the guard.
+    total = count_result.count if isinstance(count_result.count, int) else 0
+
+    result = db.table("tailored_resumes") \
+        .select("id, job_title, company, created_at") \
+        .eq("user_id", str(ctx.user.id)) \
+        .order("created_at", desc=True) \
+        .range(offset, offset + limit - 1) \
+        .execute()
+
+    # If count came back stale/zero but we still got items, reconcile so the
+    # frontend's has_more / "Showing X of Y" pagination math stays sane.
+    items = result.data or []
+    seen = offset + len(items)
+    if seen > total:
+        total = seen
+
+    return {
+        "items":    items,
+        "total":    total,
+        "limit":    limit,
+        "offset":   offset,
+        "has_more": seen < total,
+    }
 
 
 @router.post("/{record_id}/refine")
-def refine_tailored(record_id: str, body: RefineMessage, authorization: str = Header(None)):
+@limiter.limit("20/minute")
+def refine_tailored(request: Request, record_id: str, body: RefineMessage, ctx: AuthContext = Depends(require_user)):
     """
     Inline refinement chat for a specific tailored resume.
     Claude asks targeted questions and rewrites the resume when the user provides new info.
     """
-    user = _require_user(authorization)
+    db = get_client(ctx.token)
     admin = get_admin_client()
 
-    result = admin.table("tailored_resumes") \
+    result = db.table("tailored_resumes") \
         .select("*") \
         .eq("id", record_id) \
-        .eq("user_id", str(user.id)) \
+        .eq("user_id", str(ctx.user.id)) \
         .execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-    profile_result = admin.table("profiles").select("*").eq("id", str(user.id)).execute()
+    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
-    parts = [record.get("job_title", ""), "at" if record.get("company") else "", record.get("company", "")]
-    role_label = " ".join(p for p in parts if p).strip() or "this role"
+    job_title = (record.get("job_title") or "").strip()
+    company = (record.get("company") or "").strip()
+    if job_title and company:
+        role_label = f"{job_title} at {company}"
+    elif job_title:
+        role_label = job_title
+    elif company:
+        role_label = f"the role at {company}"
+    else:
+        role_label = "this role"
 
     system_prompt = f"""You are a resume coach helping {profile.get('full_name', 'the user')} refine their tailored resume for {role_label}.
 
@@ -238,7 +479,9 @@ END_UPDATE
 
 Ask ONE question at a time. Be specific to this role and resume — not generic."""
 
-    trimmed_history = body.history[-MAX_HISTORY_TURNS:]
+    # Convert typed HistoryMessage models to plain dicts for the Anthropic SDK.
+    # Slicing after validation ensures only role/content keys are forwarded.
+    trimmed_history = [m.model_dump() for m in body.history[-MAX_HISTORY_TURNS:]]
     messages = trimmed_history + [{"role": "user", "content": body.message}]
 
     try:
@@ -273,22 +516,26 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
 
 
 @router.get("/{record_id}/pdf")
-def download_pdf(record_id: str, authorization: str = Header(None)):
-    """Generate and return a PDF for a tailored resume record."""
-    user = _require_user(authorization)
-    admin = get_admin_client()
+@limiter.limit("20/minute")
+def download_pdf(request: Request, record_id: str, ctx: AuthContext = Depends(require_user)):
+    """Generate and return a PDF for a tailored resume record.
 
-    result = admin.table("tailored_resumes") \
+    Rate-limited because WeasyPrint is CPU-heavy and a single user could
+    otherwise spike the Render free instance by hammering this endpoint.
+    """
+    db = get_client(ctx.token)
+
+    result = db.table("tailored_resumes") \
         .select("*") \
         .eq("id", record_id) \
-        .eq("user_id", str(user.id)) \
+        .eq("user_id", str(ctx.user.id)) \
         .execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-    profile_result = admin.table("profiles").select("*").eq("id", str(user.id)).execute()
+    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
     try:

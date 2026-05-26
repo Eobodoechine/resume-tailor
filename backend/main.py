@@ -1,12 +1,48 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import os
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+from limiter import limiter
+# Importing routes triggers config.py, which raises RuntimeError on any missing
+# required env var (see config._require). Boot fails loudly with a clear message
+# rather than silently 502-ing on the first AI call.
 from routes import auth, profile, resumes, master, tailor, admin
+from middleware import SecurityHeadersMiddleware, SlidingSessionMiddleware
+
+# ── Sentry (TD-11) ────────────────────────────────────────────────────────────
+# Set SENTRY_DSN in your Render environment variables to enable error tracking.
+# If the variable is absent the SDK is a no-op — safe to omit in local dev.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        traces_sample_rate=0.1,   # 10% of requests traced — adjust as needed
+        send_default_pii=False,
+    )
+
+# ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Resume Tailor", version="1.0.0")
+
+# Attach rate limiter (TD-06)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Middleware — registered in reverse priority order:
+# last add_middleware call runs first in the request chain.
+# Order here: SecurityHeaders → SlidingSession → CORS (innermost first)
+app.add_middleware(SlidingSessionMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 # CORS — allow_origins=["*"] with allow_credentials=True is invalid per spec.
 # Restrict to the production domain and local dev.
@@ -66,6 +102,8 @@ def serve_improve():
 def serve_admin():
     return FileResponse(os.path.join(FRONTEND_DIR, "admin.html"))
 
+# TD-12: Health endpoint for uptime pings — prevents Render free-plan cold starts
+# when hit by an external cron service (e.g. cron-job.org every 10 minutes).
 @app.get("/health")
 def health():
     return {"status": "ok"}

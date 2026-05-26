@@ -104,29 +104,44 @@ def _parse_resume_text(text: str, profile: dict) -> dict:
 
 
 def _parse_experience(text: str) -> list:
-    """Parse experience block into list of role dicts."""
+    """Parse experience block into list of role dicts.
+
+    Role headers are identified by:
+      - line does NOT start with a bullet marker (-, •, *), AND
+      - line contains at least 2 pipe separators (Title | Company | Dates)
+
+    The two-pipe requirement avoids the old failure mode where a bullet
+    like "Built ingest pipeline | reduced ETL costs 30%" was mistaken for
+    a new role header and split one job into two. Real role headers always
+    have two pipes per the prompt contract.
+    """
     entries = []
     current = None
-    bullets = []
+    bullets: list[str] = []
 
     for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue
 
-        # Detect a new role: line with | separator or starts with a company-like pattern
-        if "|" in line or (len(line) < 80 and not line.startswith(("-", "•", "*"))):
-            if current:
+        is_bullet = line.startswith(("-", "•", "*"))
+        is_role_header = (not is_bullet) and line.count("|") >= 2
+
+        if is_role_header:
+            # New role entry — flush the previous one
+            if current is not None:
                 current["bullets"] = bullets
                 entries.append(current)
                 bullets = []
             current = {"header": line, "bullets": []}
-        elif line.startswith(("-", "•", "*")):
+        elif is_bullet:
             bullets.append(line.lstrip("-•* "))
         else:
-            bullets.append(line)
+            # Plain continuation line — treat as a bullet under the current role
+            if current is not None:
+                bullets.append(line)
 
-    if current:
+    if current is not None:
         current["bullets"] = bullets
         entries.append(current)
 

@@ -68,6 +68,7 @@
       document.getElementById("linkedin").value  = p.linkedin_url || "";
       document.getElementById("website").value   = p.website    || "";
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }
@@ -86,6 +87,7 @@
       });
       showAlert("alert-box", "Profile saved.", "success");
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }

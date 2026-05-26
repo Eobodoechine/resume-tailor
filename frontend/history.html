@@ -42,56 +42,97 @@
       </tbody>
     </table>
   </div>
+
+  <div id="load-more-wrap" style="display:none;text-align:center;margin-top:16px;">
+    <button class="btn btn-outline" id="btn-load-more" onclick="loadMore()">Load More</button>
+    <p id="history-count" style="font-size:12px;color:var(--muted);margin-top:6px;"></p>
+  </div>
 </div>
 
 <script src="/static/app.js"></script>
 <script>
   requireAuth();
 
-  async function loadHistory() {
-    try {
-      const history = await apiFetch("/api/tailor/history");
-      const tbody = document.getElementById("history-body");
+  const PAGE_SIZE   = 50;
+  let currentOffset = 0;
+  let totalCount    = 0;
 
-      if (!history.length) {
+  function rowHTML(r) {
+    const co  = (r.company  || "").replace(/'/g, "");
+    const ro  = (r.job_title || "").replace(/'/g, "");
+    return `
+      <tr>
+        <td style="font-weight:500">${r.job_title || "—"}</td>
+        <td>${r.company || "—"}</td>
+        <td style="color:var(--muted)">${fmtDate(r.created_at)}</td>
+        <td style="text-align:right">
+          <button class="btn btn-outline" style="font-size:12px;padding:5px 12px"
+            onclick="downloadPDF('${r.id}', '${co || "resume"}', '${ro || "role"}')">
+            PDF
+          </button>
+        </td>
+      </tr>`;
+  }
+
+  async function loadHistory() {
+    currentOffset = 0;
+    const tbody = document.getElementById("history-body");
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">Loading...</td></tr>`;
+
+    try {
+      const data = await apiFetch(`/api/tailor/history?limit=${PAGE_SIZE}&offset=0`);
+      totalCount    = data.total ?? 0;
+      currentOffset = data.items.length;
+
+      if (!data.items.length) {
         tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">
           No tailored resumes yet. <a href="/tailor" style="color:var(--blue)">Create your first one.</a>
         </td></tr>`;
+        document.getElementById("load-more-wrap").style.display = "none";
         return;
       }
 
-      tbody.innerHTML = history.map(r => `
-        <tr>
-          <td style="font-weight:500">${r.job_title || "—"}</td>
-          <td>${r.company || "—"}</td>
-          <td style="color:var(--muted)">${fmtDate(r.created_at)}</td>
-          <td style="text-align:right">
-            <button class="btn btn-outline" style="font-size:12px;padding:5px 12px"
-              onclick="downloadPDF('${r.id}', '${(r.company||'resume').replace(/'/g,'')}', '${(r.job_title||'role').replace(/'/g,'')}')">
-              PDF
-            </button>
-          </td>
-        </tr>`).join("");
+      tbody.innerHTML = data.items.map(rowHTML).join("");
+      updateLoadMore(data.has_more);
     } catch (e) {
-      document.getElementById("history-body").innerHTML =
+      if (e && e.redirecting) return;
+      tbody.innerHTML =
         `<tr><td colspan="4" style="text-align:center;color:var(--red)">${e.message}</td></tr>`;
     }
   }
 
+  async function loadMore() {
+    const btn = document.getElementById("btn-load-more");
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    try {
+      const data = await apiFetch(`/api/tailor/history?limit=${PAGE_SIZE}&offset=${currentOffset}`);
+      totalCount     = data.total ?? totalCount;
+      currentOffset += data.items.length;
+      document.getElementById("history-body").insertAdjacentHTML("beforeend",
+        data.items.map(rowHTML).join(""));
+      updateLoadMore(data.has_more);
+    } catch (e) {
+      if (e && e.redirecting) return;
+      alert(e.message);
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = "Load More";
+    }
+  }
+
+  function updateLoadMore(hasMore) {
+    const wrap = document.getElementById("load-more-wrap");
+    wrap.style.display = hasMore ? "block" : "none";
+    document.getElementById("history-count").textContent =
+      `Showing ${currentOffset} of ${totalCount}`;
+  }
+
   async function downloadPDF(id, company, role) {
     try {
-      const res = await fetch(`/api/tailor/${id}/pdf`, {
-        headers: { "Authorization": `Bearer ${getToken()}` }
-      });
-      if (!res.ok) throw new Error("PDF generation failed");
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = `${company}_${role}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await apiDownload(`/api/tailor/${id}/pdf`, `${company}_${role}.pdf`);
     } catch (e) {
+      if (e && e.redirecting) return;
       alert(e.message);
     }
   }

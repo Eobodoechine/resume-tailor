@@ -66,7 +66,9 @@
 
   let chatHistory = [];
 
-  // Check master resume exists
+  // Check master resume exists. Show a real error when the check itself fails
+  // (used to swallow silently — users would type a question and only learn
+  // about the failure when the chat POST also blew up).
   async function checkMaster() {
     try {
       const master = await apiFetch("/api/master/");
@@ -77,7 +79,12 @@
           </div>`;
         document.getElementById("btn-send").disabled = true;
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e && e.redirecting) return;
+      document.getElementById("master-alert").innerHTML = `
+        <div class="alert alert-error">Couldn't load your master resume: ${e.message}</div>`;
+      document.getElementById("btn-send").disabled = true;
+    }
   }
 
   async function sendMessage() {
@@ -98,9 +105,11 @@
         body: JSON.stringify({ message: msg, history: chatHistory })
       });
 
-      // Update history
+      // Update history — cap at 60 entries so the browser array doesn't grow unbounded.
+      // The server already enforces MAX_HISTORY_TURNS=20 on its side.
       chatHistory.push({ role: "user",      content: msg });
       chatHistory.push({ role: "assistant", content: res.reply });
+      if (chatHistory.length > 60) chatHistory = chatHistory.slice(-60);
 
       appendMessage("assistant", res.reply);
 
@@ -110,6 +119,7 @@
         setTimeout(() => notice.style.display = "none", 4000);
       }
     } catch (e) {
+      if (e && e.redirecting) return;
       appendMessage("assistant", `Sorry, something went wrong: ${e.message}`);
     } finally {
       btn.disabled = false;

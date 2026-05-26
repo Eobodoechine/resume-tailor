@@ -363,7 +363,7 @@
         <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch JD</button>
       </div>
       <p style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;">
-        Works with Lever, Greenhouse, and Indeed. <strong>LinkedIn requires a login</strong> — paste the text instead.
+        Works best with Greenhouse, Lever, and company career pages. <strong>LinkedIn requires a login</strong> — paste the text instead. If fetch fails, just copy-paste the JD.
       </p>
       <textarea id="jd-fetched" placeholder="Fetched job description will appear here — review and edit before generating." style="min-height:140px;margin-top:10px;display:none;"></textarea>
     </div>
@@ -459,6 +459,7 @@
       ta.style.display = "block";
       showAlert("alert-box", "✓ Job description fetched — review and edit if needed, then click Generate.", "success");
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
@@ -480,25 +481,76 @@
     btn.innerHTML = `<span class="spinner"></span> Generating…`;
     setStep(2);
 
+    // Show result panel immediately so text streams in progressively
+    const resultText = document.getElementById("result-text");
+    resultText.textContent = "";
+    document.getElementById("result-panel").style.display = "block";
+    document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+
     try {
-      const res = await apiFetch("/api/tailor/", {
+      const res = await fetch("/api/tailor/stream", {
         method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_description: jd, job_title: title, company })
       });
 
-      currentRecordId = res.id;
-      refineHistory   = [];
+      if (res.status === 401) {
+        clearToken();
+        window.location.href = "/";
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Generation failed");
+      }
 
-      document.getElementById("result-text").textContent = res.tailored_content;
-      document.getElementById("result-panel").style.display = "block";
-      document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
-      setStep(3);
+      refineHistory = [];
 
-      startRefineChat();
+      // Consume SSE stream — each "data: {...}" line is a chunk or completion event
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Split on SSE double-newline boundaries
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();   // Keep incomplete last part in buffer
+
+        for (const part of parts) {
+          for (const line of part.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            let evt;
+            try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
+
+            if (evt.error) {
+              throw new Error(evt.error);
+            }
+            if (evt.chunk) {
+              resultText.textContent += evt.chunk;
+            }
+            if (evt.done) {
+              if (!evt.id) {
+                showAlert("alert-box", "Resume generated but couldn't be saved — please refresh and try again.", "error");
+                setStep(1);
+                return;
+              }
+              currentRecordId = evt.id;
+              setStep(3);
+              startRefineChat();
+            }
+          }
+        }
+      }
 
     } catch (e) {
       showAlert("alert-box", e.message, "error");
       setStep(1);
+      document.getElementById("result-panel").style.display = "none";
     } finally {
       btn.disabled = false;
       btn.innerHTML = "Generate Tailored Resume";
@@ -562,6 +614,7 @@
       }
     } catch (e) {
       document.getElementById("typing-indicator")?.remove();
+      if (e && e.redirecting) return;
       addMessage("Couldn't load AI feedback — you can still download your PDF.", "coach");
     }
   }
@@ -596,6 +649,7 @@
       }
     } catch (e) {
       document.getElementById("typing-indicator")?.remove();
+      if (e && e.redirecting) return;
       addMessage("Something went wrong — please try again.", "coach");
       refineHistory.pop();
     } finally {
@@ -630,31 +684,13 @@
     btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building PDF…`;
 
     try {
-      const res = await fetch(`/api/tailor/${currentRecordId}/pdf`, {
-        headers: { "Authorization": `Bearer ${getToken()}` }
-      });
-      if (!res.ok) throw new Error("PDF generation failed — please try again.");
-
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-
-      // Append to DOM before clicking — required for Firefox and Safari
-      const a = document.createElement("a");
-      a.href          = url;
-      a.download      = "tailored_resume.pdf";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 1500);
-
+      // apiDownload() in app.js handles 401 redirect and blob trigger —
+      // no more duplicated raw fetch logic here.
+      await apiDownload(`/api/tailor/${currentRecordId}/pdf`, "tailored_resume.pdf");
       setStep(4);
       showAlert("alert-box", "✓ PDF saved — check your Downloads folder (or your browser's download bar at the bottom of the screen).", "success");
-
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;

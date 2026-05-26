@@ -27,6 +27,34 @@ def _extract_pdf(file_bytes: bytes) -> str:
 
 
 def _extract_docx(file_bytes: bytes) -> str:
+    """
+    Extract text from a DOCX file, including paragraphs AND tables.
+
+    A huge fraction of real-world resumes are built in two-column Word
+    tables — extracting only doc.paragraphs would silently drop that
+    content. We also pull text from section headers/footers in case the
+    candidate put their contact info there.
+    """
     doc = docx.Document(io.BytesIO(file_bytes))
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n".join(paragraphs)
+    parts: list[str] = []
+
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if text:
+            parts.append(text)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                cell_text = cell.text.strip()
+                if cell_text:
+                    parts.append(cell_text)
+
+    for section in doc.sections:
+        for source in (section.header, section.footer):
+            for p in source.paragraphs:
+                text = p.text.strip()
+                if text:
+                    parts.append(text)
+
+    return "\n".join(parts)

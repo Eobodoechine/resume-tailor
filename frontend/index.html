@@ -68,8 +68,9 @@
 
 <script src="/static/app.js"></script>
 <script>
-  // If already logged in, go straight to dashboard
-  if (getToken()) window.location.href = "/dashboard";
+  // If already logged in (session flag set by magic-link exchange in app.js),
+  // skip the login form and go straight to the dashboard.
+  if (isLoggedIn()) window.location.href = "/dashboard";
 
   function showTab(tab) {
     document.getElementById("panel-login").style.display   = tab === "login"   ? "block" : "none";

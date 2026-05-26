@@ -24,7 +24,8 @@ Rules:
 - Remove duplicates but keep the most detailed version of each entry
 - Do NOT invent or embellish anything — only use what is explicitly stated
 - Organize into clear sections: SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (if present)
-- Under each role: include company, title, dates, location, and all bullet points found
+- Under each role: format the header as "Job Title | Company Name | Start – End" (use " | " as separator)
+- Follow each role header immediately with bullet points starting with "•"
 - Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
 - Output plain text only — no markdown headers with #, no asterisks for bullets, use ALL CAPS for section headers
 
@@ -44,17 +45,19 @@ Output the complete master resume now:"""
     return message.content[0].text
 
 
-def tailor_resume(master_resume: str, job_description: str, profile: dict, job_title: str = "", company: str = "") -> str:
+def _build_tailor_prompt(
+    name: str,
+    contact_block: str,
+    target: str,
+    master_resume: str,
+    job_description: str,
+) -> str:
     """
-    Given a master resume and a job description,
-    produce a tailored version that highlights the most relevant experience.
+    Single source of truth for the tailoring prompt.
+    Called by both tailor_resume() and stream_tailor_resume() so they
+    can never silently drift apart.
     """
-    name = profile.get("full_name", "")
-    contact_block = _build_contact_block(profile)
-
-    target = f"{job_title} at {company}" if job_title and company else "the role below"
-
-    prompt = f"""You are an expert resume writer and career strategist. Your task is to tailor {name}'s master resume for {target}.
+    return f"""You are an expert resume writer and career strategist. Your task is to tailor {name}'s master resume for {target}.
 
 Rules:
 - Select and emphasize the experience, skills, and achievements MOST relevant to the job description
@@ -63,6 +66,8 @@ Rules:
 - Do NOT fabricate, invent, or add anything not in the master resume
 - Do NOT remove entire roles — keep all jobs but trim less-relevant bullets if needed
 - Match terminology from the job description naturally (don't keyword-stuff)
+- Format each role header as "Job Title | Company Name | Start – End" (use " | " as separator)
+- Follow each role header immediately with bullet points starting with "•"
 - Output plain text only — no markdown, use ALL CAPS for section headers
 - Keep it to one page worth of content (approximately 600-750 words of body text)
 
@@ -77,12 +82,51 @@ JOB DESCRIPTION:
 
 Output the tailored resume now:"""
 
+
+def tailor_resume(master_resume: str, job_description: str, profile: dict, job_title: str = "", company: str = "") -> str:
+    """
+    Given a master resume and a job description,
+    produce a tailored version that highlights the most relevant experience.
+    """
+    name = profile.get("full_name", "")
+    contact_block = _build_contact_block(profile)
+    target = f"{job_title} at {company}" if job_title and company else "the role below"
+    prompt = _build_tailor_prompt(name, contact_block, target, master_resume, job_description)
+
     message = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
+
+
+def stream_tailor_resume(
+    master_resume: str,
+    job_description: str,
+    profile: dict,
+    job_title: str = "",
+    company: str = "",
+):
+    """
+    Generator that yields text chunks from Claude's streaming API.
+    Designed for use with FastAPI's StreamingResponse + SSE.
+
+    Yields raw text strings — the caller wraps them in SSE framing.
+    Uses the same prompt as tailor_resume() via _build_tailor_prompt().
+    """
+    name = profile.get("full_name", "")
+    contact_block = _build_contact_block(profile)
+    target = f"{job_title} at {company}" if job_title and company else "the role below"
+    prompt = _build_tailor_prompt(name, contact_block, target, master_resume, job_description)
+
+    with client.messages.stream(
+        model=CLAUDE_MODEL,
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 def _build_contact_block(profile: dict) -> str:

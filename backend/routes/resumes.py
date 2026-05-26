@@ -1,11 +1,13 @@
 """
 Resume file upload routes.
 """
-from fastapi import APIRouter, Header, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from pathlib import Path
-from services.supabase_client import get_admin_client, get_user_from_token
+from dependencies.auth import require_user, AuthContext
+from services.supabase_client import get_client, get_admin_client
 from services.extractor import extract_text
 from config import RESUME_BUCKET
+from limiter import limiter
 import logging
 import uuid
 
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
+MAX_FILES_PER_USER = 100              # generous cap — prevents unbounded storage growth
 
 # Allowed MIME types for resume files
 ALLOWED_MIME_TYPES = {
@@ -22,38 +25,61 @@ ALLOWED_MIME_TYPES = {
     "application/msword",
 }
 
+# Magic bytes for file type validation (TD-07)
+# Reading the Content-Type header alone is bypassable — any client can lie.
+# Checking the actual file bytes prevents disguised uploads.
+_PDF_MAGIC = b"%PDF"
+_DOCX_MAGIC = b"PK\x03\x04"   # ZIP/OOXML container (DOCX, XLSX, PPTX)
 
-def _require_user(authorization: str):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ", 1)[1]
-    user = get_user_from_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user
+
+def _check_magic_bytes(data: bytes, ext: str) -> bool:
+    """Return True if the file's leading bytes match the declared extension."""
+    if ext == "pdf":
+        return data[:4] == _PDF_MAGIC
+    elif ext in ("docx", "doc"):
+        # .doc (legacy) is OLE2 compound; DOCX is ZIP. We accept both but
+        # check DOCX magic — legacy .doc is rare and may not have consistent
+        # magic across all versions, so we allow it through on ext alone.
+        if ext == "docx":
+            return data[:4] == _DOCX_MAGIC
+        return True  # .doc — trust the extension, OLE2 magic varies
+    return False
 
 
 @router.get("/")
-def list_resumes(authorization: str = Header(None)):
+@limiter.limit("60/minute")
+def list_resumes(request: Request, ctx: AuthContext = Depends(require_user)):
     """List all uploaded resume files for the current user."""
-    user = _require_user(authorization)
-    admin = get_admin_client()
-    result = admin.table("resume_files") \
+    db = get_client(ctx.token)
+    result = db.table("resume_files") \
         .select("id, filename, file_type, uploaded_at") \
-        .eq("user_id", str(user.id)) \
+        .eq("user_id", str(ctx.user.id)) \
         .order("uploaded_at", desc=True) \
         .execute()
     return result.data
 
 
 @router.post("/upload")
+@limiter.limit("10/minute")
 async def upload_resume(
+    request: Request,
     file: UploadFile = File(...),
-    authorization: str = Header(None)
+    ctx: AuthContext = Depends(require_user)
 ):
     """Upload a new resume file. Extracts text and stores in Supabase."""
-    user = _require_user(authorization)
     admin = get_admin_client()
+
+    # Enforce per-user file cap before accepting the upload
+    count_result = admin.table("resume_files") \
+        .select("id", count="exact") \
+        .eq("user_id", str(ctx.user.id)) \
+        .execute()
+    existing_count = count_result.count if count_result.count is not None else len(count_result.data)
+    if existing_count >= MAX_FILES_PER_USER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You've reached the maximum of {MAX_FILES_PER_USER} uploaded files. Delete some before uploading more."
+        )
 
     # Validate file extension
     raw_filename = file.filename or "resume"
@@ -73,6 +99,13 @@ async def upload_resume(
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large. Maximum size is 10 MB.")
 
+    # Validate magic bytes — prevents disguised file uploads (TD-07)
+    if not _check_magic_bytes(file_bytes, ext):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match the declared extension (.{ext}). Upload a real PDF or DOCX file."
+        )
+
     # Extract text
     try:
         extracted = extract_text(file_bytes, safe_filename)
@@ -80,16 +113,16 @@ async def upload_resume(
         raise HTTPException(status_code=422, detail=f"Could not read file: {str(e)}")
 
     # Upload to Supabase Storage — uuid in path prevents collisions; safe_filename strips traversal
-    storage_path = f"{user.id}/{uuid.uuid4()}/{safe_filename}"
+    storage_path = f"{ctx.user.id}/{uuid.uuid4()}/{safe_filename}"
     admin.storage.from_(RESUME_BUCKET).upload(
         path=storage_path,
         file=file_bytes,
         file_options={"content-type": content_type or "application/octet-stream"}
     )
 
-    # Save metadata to DB
+    # Save metadata to DB — use admin client since storage returns service-level metadata
     admin.table("resume_files").insert({
-        "user_id": str(user.id),
+        "user_id": str(ctx.user.id),
         "filename": safe_filename,
         "file_path": storage_path,
         "file_type": ext,
@@ -100,13 +133,13 @@ async def upload_resume(
 
 
 @router.delete("/{file_id}")
-def delete_resume(file_id: str, authorization: str = Header(None)):
+def delete_resume(file_id: str, ctx: AuthContext = Depends(require_user)):
     """Delete a resume file."""
-    user = _require_user(authorization)
+    db = get_client(ctx.token)
     admin = get_admin_client()
 
-    # Confirm ownership
-    result = admin.table("resume_files").select("file_path").eq("id", file_id).eq("user_id", str(user.id)).execute()
+    # Confirm ownership via RLS-respecting client
+    result = db.table("resume_files").select("file_path").eq("id", file_id).eq("user_id", str(ctx.user.id)).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="File not found")
 

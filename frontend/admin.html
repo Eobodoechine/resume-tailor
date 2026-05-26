@@ -112,6 +112,7 @@
           </td>
         </tr>`).join("");
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }
@@ -122,6 +123,7 @@
       showAlert("alert-box", `✓ ${res.message}`, "success");
       loadRequests(currentFilter);
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }
@@ -132,6 +134,7 @@
       await apiFetch("/api/admin/reject", { method: "POST", body: JSON.stringify({ request_id: id }) });
       loadRequests(currentFilter);
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }

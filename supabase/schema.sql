@@ -85,7 +85,17 @@ CREATE POLICY "Own master resume" ON public.master_resumes
 CREATE POLICY "Own tailored resumes" ON public.tailored_resumes
   FOR ALL USING (auth.uid() = user_id);
 
--- Access requests: public insert, admin read (handled in backend)
+-- Access requests:
+--   INSERT — anyone (anon role) may submit a request; the row is harmless
+--            until an admin approves it.
+--   SELECT — intentionally NO policy. With RLS enabled and no SELECT policy,
+--            PostgREST returns nothing to anon/authenticated callers. The
+--            admin panel reads this table via the service-role key (which
+--            bypasses RLS) in backend/routes/admin.py.
+--   UPDATE/DELETE — same: admin-only via the service-role key.
+-- Don't add a "users can read their own request" policy without also
+-- considering whether that leaks pending/rejected status to anyone who
+-- guesses an email.
 CREATE POLICY "Public insert access request" ON public.access_requests
   FOR INSERT WITH CHECK (TRUE);
 

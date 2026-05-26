@@ -1,11 +1,14 @@
 """
 Master resume routes: synthesize, get, and update via gap-filling chat.
 """
-from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
-from typing import Optional
-from services.supabase_client import get_admin_client, get_user_from_token
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
+from datetime import datetime, timezone
+from dependencies.auth import require_user, AuthContext
+from services.supabase_client import get_client, get_admin_client
 from services import claude as claude_service
+from limiter import limiter
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
@@ -13,45 +16,36 @@ router = APIRouter(prefix="/api/master", tags=["master"])
 ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def _require_user(authorization: str):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ", 1)[1]
-    user = get_user_from_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user
-
-
-def _get_profile(admin, user_id: str) -> dict:
-    result = admin.table("profiles").select("*").eq("id", user_id).execute()
+def _get_profile(db, user_id: str) -> dict:
+    result = db.table("profiles").select("*").eq("id", user_id).execute()
     return result.data[0] if result.data else {}
 
 
 @router.get("/")
-def get_master_resume(authorization: str = Header(None)):
+@limiter.limit("60/minute")
+def get_master_resume(request: Request, ctx: AuthContext = Depends(require_user)):
     """Get the current master resume for the user."""
-    user = _require_user(authorization)
-    admin = get_admin_client()
-    result = admin.table("master_resumes").select("*").eq("user_id", str(user.id)).execute()
+    db = get_client(ctx.token)
+    result = db.table("master_resumes").select("*").eq("user_id", str(ctx.user.id)).execute()
     if not result.data:
         return {"content": None, "last_updated": None}
     return result.data[0]
 
 
 @router.post("/synthesize")
-def synthesize_master(authorization: str = Header(None)):
+@limiter.limit("5/minute")
+def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)):
     """
     Re-synthesize the master resume from all uploaded resume files.
     Call this after uploading new files.
     """
-    user = _require_user(authorization)
+    db = get_client(ctx.token)
     admin = get_admin_client()
 
     # Pull all extracted texts
-    files = admin.table("resume_files") \
+    files = db.table("resume_files") \
         .select("extracted_text, filename") \
-        .eq("user_id", str(user.id)) \
+        .eq("user_id", str(ctx.user.id)) \
         .execute()
 
     if not files.data:
@@ -61,7 +55,7 @@ def synthesize_master(authorization: str = Header(None)):
     if not texts:
         raise HTTPException(status_code=400, detail="Could not extract text from uploaded files.")
 
-    profile = _get_profile(admin, str(user.id))
+    profile = _get_profile(db, str(ctx.user.id))
 
     # Synthesize via Claude
     try:
@@ -69,16 +63,16 @@ def synthesize_master(authorization: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
-    # Upsert master resume
-    existing = admin.table("master_resumes").select("id").eq("user_id", str(user.id)).execute()
+    # Upsert master resume — use admin client for upsert to avoid RLS insert policy issues
+    existing = admin.table("master_resumes").select("id").eq("user_id", str(ctx.user.id)).execute()
     if existing.data:
         admin.table("master_resumes").update({
             "content": master_content,
-            "last_updated": "now()"
-        }).eq("user_id", str(user.id)).execute()
+            "last_updated": datetime.now(timezone.utc).isoformat()
+        }).eq("user_id", str(ctx.user.id)).execute()
     else:
         admin.table("master_resumes").insert({
-            "user_id": str(user.id),
+            "user_id": str(ctx.user.id),
             "content": master_content
         }).execute()
 
@@ -88,24 +82,36 @@ def synthesize_master(authorization: str = Header(None)):
 MAX_HISTORY_TURNS = 20  # cap conversation history to prevent token bloat
 
 
+class GapHistoryMessage(BaseModel):
+    """
+    A single turn in the gap-fill conversation.
+    Mirrors HistoryMessage from tailor.py — Literal role closes the
+    prompt-injection surface where a caller could inject role:"system"
+    into the conversation array forwarded to Claude.
+    """
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=4000)
+
+
 class GapMessage(BaseModel):
-    message: str                      # user's latest message
-    history: list[dict] = []          # [{role: "user"|"assistant", content: "..."}]
+    message: str = Field(..., max_length=4000)
+    history: list[GapHistoryMessage] = Field(default=[], max_length=40)
 
 
 @router.post("/gap-fill/chat")
-def gap_fill_chat(body: GapMessage, authorization: str = Header(None)):
+@limiter.limit("20/minute")
+def gap_fill_chat(request: Request, body: GapMessage, ctx: AuthContext = Depends(require_user)):
     """
     Conversational gap-filling. Claude reviews the master resume,
     asks targeted questions to surface missing achievements, and updates it.
     Returns Claude's next question or confirmation that the resume was updated.
     """
-    user = _require_user(authorization)
+    db = get_client(ctx.token)
     admin = get_admin_client()
-    profile = _get_profile(admin, str(user.id))
+    profile = _get_profile(db, str(ctx.user.id))
 
     # Get current master resume
-    master_result = admin.table("master_resumes").select("content").eq("user_id", str(user.id)).execute()
+    master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     master_content = master_result.data[0]["content"] if master_result.data else ""
 
     system_prompt = f"""You are a career coach and expert resume writer helping {profile.get('full_name', 'the user')} improve their master resume.
@@ -132,8 +138,10 @@ Ask ONE question at a time. Be conversational, not clinical. Be specific to thei
 Current master resume:
 {master_content or "(No master resume yet — ask them to upload files first)"}"""
 
-    # Trim history to last N turns to avoid context overflow
-    trimmed_history = body.history[-MAX_HISTORY_TURNS:]
+    # Trim history to last N turns to avoid context overflow.
+    # Convert typed models to plain dicts for the Anthropic SDK — slicing after
+    # validation guarantees only role/content keys are forwarded.
+    trimmed_history = [m.model_dump() for m in body.history[-MAX_HISTORY_TURNS:]]
     messages = trimmed_history + [{"role": "user", "content": body.message}]
 
     try:
@@ -149,7 +157,6 @@ Current master resume:
     reply = response.content[0].text
 
     # Check if Claude included a master resume update
-    # Use .find() instead of .index() to avoid ValueError if markers are missing
     updated_master = None
     update_start = reply.find("UPDATE_MASTER_RESUME:")
     update_end = reply.find("END_UPDATE")
@@ -157,16 +164,16 @@ Current master resume:
         content_start = update_start + len("UPDATE_MASTER_RESUME:")
         updated_master = reply[content_start:update_end].strip()
 
-        # Save updated master
-        existing = admin.table("master_resumes").select("id").eq("user_id", str(user.id)).execute()
+        # Save updated master — use admin client for upsert
+        existing = admin.table("master_resumes").select("id").eq("user_id", str(ctx.user.id)).execute()
         if existing.data:
             admin.table("master_resumes").update({
                 "content": updated_master,
-                "last_updated": "now()"
-            }).eq("user_id", str(user.id)).execute()
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }).eq("user_id", str(ctx.user.id)).execute()
         else:
             admin.table("master_resumes").insert({
-                "user_id": str(user.id),
+                "user_id": str(ctx.user.id),
                 "content": updated_master
             }).execute()
 

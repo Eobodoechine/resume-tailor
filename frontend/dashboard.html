@@ -97,7 +97,7 @@
       const [profile, files, history, master] = await Promise.all([
         apiFetch("/api/profile/"),
         apiFetch("/api/resumes/"),
-        apiFetch("/api/tailor/history"),
+        apiFetch("/api/tailor/history?limit=1"),   // only need the total count
         apiFetch("/api/master/")
       ]);
 
@@ -108,7 +108,7 @@
 
       // Stats
       document.getElementById("stat-files").textContent    = files.length;
-      document.getElementById("stat-tailored").textContent = history.length;
+      document.getElementById("stat-tailored").textContent = history.total ?? 0;
 
       // Master resume status
       const masterEl = document.getElementById("master-status");
@@ -126,6 +126,7 @@
       // File list
       renderFileList(files);
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }
@@ -152,6 +153,7 @@
       await apiFetch(`/api/resumes/${id}`, { method: "DELETE" });
       loadDashboard();
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     }
   }
@@ -165,6 +167,7 @@
       showAlert("alert-box", "Master resume updated.", "success");
       loadDashboard();
     } catch (e) {
+      if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
@@ -177,6 +180,8 @@
 
   async function handleFileSelect(e) {
     const files = Array.from(e.target.files);
+    // Reset the progress area at the start of a batch so old lines don't pile up.
+    document.getElementById("upload-progress").innerHTML = "";
     for (const file of files) {
       await uploadFile(file);
     }
@@ -184,16 +189,27 @@
     loadDashboard();
   }
 
-  async function uploadFile(file) {
+  function appendProgress(html) {
     const prog = document.getElementById("upload-progress");
-    prog.innerHTML = `<div class="alert alert-info">Uploading ${file.name}...</div>`;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = html;
+    prog.appendChild(wrap);
+  }
+
+  async function uploadFile(file) {
+    // Show one row per file and update it in place so a batch upload doesn't
+    // collapse to just the last file's status.
+    const row = document.createElement("div");
+    row.innerHTML = `<div class="alert alert-info">Uploading ${file.name}…</div>`;
+    document.getElementById("upload-progress").appendChild(row);
     try {
       const fd = new FormData();
       fd.append("file", file);
       await apiUpload("/api/resumes/upload", fd);
-      prog.innerHTML = `<div class="alert alert-success">✓ ${file.name} uploaded</div>`;
+      row.innerHTML = `<div class="alert alert-success">✓ ${file.name} uploaded</div>`;
     } catch (e) {
-      prog.innerHTML = `<div class="alert alert-error">Failed to upload ${file.name}: ${e.message}</div>`;
+      if (e && e.redirecting) return;
+      row.innerHTML = `<div class="alert alert-error">Failed to upload ${file.name}: ${e.message}</div>`;
     }
   }
 
@@ -204,6 +220,7 @@
   zone.addEventListener("drop", async e => {
     e.preventDefault();
     zone.classList.remove("dragover");
+    document.getElementById("upload-progress").innerHTML = "";
     for (const file of Array.from(e.dataTransfer.files)) {
       await uploadFile(file);
     }
