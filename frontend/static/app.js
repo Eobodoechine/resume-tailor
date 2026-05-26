@@ -168,6 +168,11 @@ async function logout() {
     const params = new URLSearchParams(hash.replace("#", ""));
     const token = params.get("access_token");
     if (token) {
+      // Set the flag BEFORE the async fetch so requireAuth() (which runs
+      // synchronously from dashboard's inline <script> right after app.js
+      // loads) doesn't redirect to login while the exchange is in flight.
+      localStorage.setItem("rt_session_active", "1");
+
       // Exchange for HttpOnly cookie
       fetch("/api/auth/session", {
         method: "POST",
@@ -176,15 +181,17 @@ async function logout() {
         body: JSON.stringify({ token })
       })
         .then(res => {
-          if (res.ok) {
-            localStorage.setItem("rt_session_active", "1");
+          if (!res.ok) {
+            // Exchange failed (e.g. 403 not approved) — clear the flag so
+            // the next requireAuth() call on the dashboard will redirect to login.
+            localStorage.removeItem("rt_session_active");
           }
           // Clean URL hash regardless of outcome, then redirect to dashboard
           window.location.replace("/dashboard");
         })
         .catch(() => {
-          // Exchange failed — fall back to dashboard anyway
-          // (user will get 401 on first API call and be redirected to login)
+          // Network failure — clear flag and let the 401 on first API call handle it
+          localStorage.removeItem("rt_session_active");
           window.location.replace("/dashboard");
         });
     }
