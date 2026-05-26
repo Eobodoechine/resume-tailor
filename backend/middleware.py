@@ -20,9 +20,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' https://cdnjs.cloudflare.com; "
+            # 'unsafe-inline' required: every page has inline onclick= handlers
+            # and <script> blocks. Remove once all JS moves to app.js with
+            # addEventListener and a nonce-based CSP is in place.
+            "script-src 'self' https://cdnjs.cloudflare.com 'unsafe-inline'; "
             # 'unsafe-inline' for styles: inline style= attributes on HTML elements.
-            # Remove when all pages move style= attrs to style.css.
             "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
             "font-src https://fonts.gstatic.com; "
             "connect-src 'self'; "
