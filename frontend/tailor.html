@@ -6,7 +6,74 @@
   <title>Tailor Resume — Resume Tailor</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
+  <!-- Markdown renderer + HTML sanitizer for AI chat messages -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
   <style>
+
+    /* ── Step progress bar ── */
+    .steps {
+      display: flex;
+      align-items: center;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 20px;
+      margin-bottom: 20px;
+      overflow-x: auto;
+      gap: 0;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .step .step-num {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--border);
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+      transition: background 0.2s, color 0.2s;
+    }
+    .step.active { color: var(--navy); font-weight: 600; }
+    .step.active .step-num { background: var(--navy); color: white; }
+    .step.done { color: var(--green); }
+    .step.done .step-num { background: var(--green); color: white; }
+    .step-divider {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+      margin: 0 12px;
+      min-width: 16px;
+    }
+
+    /* ── Hint box ── */
+    .hint-box {
+      background: #EFF6FF;
+      border: 1px solid #BFDBFE;
+      border-radius: 8px;
+      padding: 11px 14px;
+      font-size: 13px;
+      color: #1e40af;
+      margin-bottom: 16px;
+      display: flex;
+      gap: 9px;
+      align-items: flex-start;
+      line-height: 1.5;
+    }
+    .hint-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
     /* ── JD input toggle ── */
     .jd-toggle {
       display: flex;
@@ -34,10 +101,7 @@
       gap: 8px;
       align-items: center;
     }
-    .url-row input {
-      flex: 1;
-      margin-bottom: 0;
-    }
+    .url-row input { flex: 1; margin-bottom: 0; }
     .btn-fetch {
       padding: 10px 16px;
       background: var(--navy);
@@ -52,45 +116,64 @@
     }
     .btn-fetch:disabled { opacity: 0.55; cursor: not-allowed; }
 
+    /* ── Result content area ── */
+    #result-text {
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      line-height: 1.7;
+      color: var(--text);
+      background: var(--light);
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      max-height: 420px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     /* ── Inline refinement chat ── */
     #refine-panel {
-      margin-top: 24px;
+      margin-top: 20px;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
     }
-    #refine-panel .refine-header {
+    .refine-header {
       background: var(--navy);
       color: #fff;
-      padding: 14px 20px;
+      padding: 13px 18px;
       font-size: 14px;
       font-weight: 600;
       display: flex;
       align-items: center;
       gap: 8px;
     }
-    #refine-panel .refine-header span.badge {
-      background: rgba(255,255,255,0.2);
+    .refine-header .live-badge {
+      background: rgba(255,255,255,0.18);
       border-radius: 20px;
-      padding: 2px 10px;
+      padding: 2px 9px;
       font-size: 11px;
       font-weight: 500;
+      letter-spacing: 0.3px;
     }
     #refine-messages {
-      padding: 16px 20px;
+      padding: 16px 18px;
       display: flex;
       flex-direction: column;
       gap: 12px;
-      max-height: 400px;
+      max-height: 420px;
       overflow-y: auto;
       background: var(--light);
     }
+
+    /* Chat bubbles */
     .msg {
       max-width: 88%;
       padding: 10px 14px;
       border-radius: 10px;
       font-size: 13px;
-      line-height: 1.55;
+      line-height: 1.6;
     }
     .msg.coach {
       background: #fff;
@@ -98,27 +181,52 @@
       align-self: flex-start;
       color: var(--text);
     }
+    /* Markdown elements inside coach bubbles */
+    .msg.coach h1, .msg.coach h2, .msg.coach h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--navy);
+      margin: 8px 0 4px;
+      line-height: 1.4;
+    }
+    .msg.coach h2 {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 3px;
+    }
+    .msg.coach p { margin: 4px 0; }
+    .msg.coach ul, .msg.coach ol { padding-left: 18px; margin: 5px 0; }
+    .msg.coach li { margin-bottom: 3px; }
+    .msg.coach strong { color: var(--navy); font-weight: 600; }
+    .msg.coach hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+    .msg.coach p:first-child { margin-top: 0; }
+    .msg.coach p:last-child { margin-bottom: 0; }
+
     .msg.user {
       background: var(--navy);
       color: #fff;
       align-self: flex-end;
     }
     .msg.update-notice {
-      background: #e8f5e9;
-      border: 1px solid #a5d6a7;
-      color: #2e7d32;
+      background: #ecfdf5;
+      border: 1px solid #6ee7b7;
+      color: #065f46;
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 600;
       align-self: stretch;
       max-width: 100%;
       text-align: center;
+      padding: 8px;
+      border-radius: 8px;
     }
+
+    /* Input row — align-items: flex-end keeps Send button anchored at the bottom */
     #refine-input-row {
       display: flex;
       gap: 8px;
       padding: 12px 16px;
       border-top: 1px solid var(--border);
       background: #fff;
+      align-items: flex-end;
     }
     #refine-input {
       flex: 1;
@@ -129,10 +237,14 @@
       font-family: inherit;
       resize: none;
       outline: none;
+      min-height: 40px;
+      max-height: 120px;
+      line-height: 1.5;
     }
     #refine-input:focus { border-color: var(--navy); }
     #btn-refine-send {
-      padding: 9px 16px;
+      height: 38px;
+      padding: 0 16px;
       background: var(--navy);
       color: #fff;
       border: none;
@@ -141,9 +253,11 @@
       font-weight: 600;
       cursor: pointer;
       transition: opacity 0.15s;
+      flex-shrink: 0;
     }
     #btn-refine-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* Typing dots animation */
     .typing-dots span {
       display: inline-block;
       width: 6px; height: 6px;
@@ -156,8 +270,26 @@
     .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes bounce {
       0%, 80%, 100% { transform: translateY(0); }
-      40% { transform: translateY(-5px); }
+      40%           { transform: translateY(-5px); }
     }
+
+    /* ── Download button ── */
+    #btn-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      background: var(--green);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+    #btn-download:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -177,20 +309,43 @@
 <div class="container">
   <div id="alert-box"></div>
 
-  <div style="margin-bottom:24px;">
-    <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Tailor Your Resume</h1>
-    <p style="color:var(--muted);font-size:14px;margin-top:4px;">Paste a job description or drop in a URL — get a tailored resume and live feedback in one shot.</p>
+  <!-- 4-step progress bar -->
+  <div class="steps">
+    <div class="step active" id="step-1">
+      <div class="step-num">1</div> Add Job Description
+    </div>
+    <div class="step-divider"></div>
+    <div class="step" id="step-2">
+      <div class="step-num">2</div> Generate Resume
+    </div>
+    <div class="step-divider"></div>
+    <div class="step" id="step-3">
+      <div class="step-num">3</div> Refine with AI
+    </div>
+    <div class="step-divider"></div>
+    <div class="step" id="step-4">
+      <div class="step-num">4</div> Download PDF
+    </div>
   </div>
 
   <div class="card">
-    <label>Job Title (optional)</label>
+    <div style="margin-bottom:18px;">
+      <h1 style="font-size:20px;font-weight:700;color:var(--navy);margin-bottom:4px;">Tailor Your Resume</h1>
+      <p style="color:var(--muted);font-size:13px;line-height:1.5;">Paste a job description or drop in a URL — get a tailored resume and live AI coaching in one shot.</p>
+    </div>
+
+    <div class="hint-box">
+      <span class="hint-icon">💡</span>
+      <span><strong>Tip:</strong> Add Job Title and Company before generating. They sharpen the AI coaching session and name your downloaded PDF automatically.</span>
+    </div>
+
+    <label>Job Title <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label>
     <input type="text" id="job-title" placeholder="e.g. Senior Financial Analyst">
 
-    <label>Company (optional)</label>
+    <label>Company <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label>
     <input type="text" id="company" placeholder="e.g. Blackstone">
 
-    <!-- JD input with paste/URL toggle -->
-    <label>Job Description *</label>
+    <label>Job Description <span style="color:var(--red);font-size:12px">required</span></label>
     <div class="jd-toggle">
       <button id="btn-mode-paste" class="active" onclick="setMode('paste')">Paste text</button>
       <button id="btn-mode-url" onclick="setMode('url')">Use URL</button>
@@ -198,7 +353,7 @@
 
     <!-- Paste mode -->
     <div id="jd-paste-area">
-      <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:180px;"></textarea>
+      <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:160px;"></textarea>
     </div>
 
     <!-- URL mode -->
@@ -207,50 +362,39 @@
         <input type="url" id="jd-url" placeholder="https://jobs.lever.co/company/job-id">
         <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch JD</button>
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-top:6px;">Works with most job boards (Lever, Greenhouse, LinkedIn, Indeed). Some require a login and can't be fetched automatically.</p>
-      <textarea id="jd-fetched" placeholder="Fetched job description will appear here — you can edit it before generating." style="min-height:140px;margin-top:10px;display:none;"></textarea>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;">
+        Works with Lever, Greenhouse, and Indeed. <strong>LinkedIn requires a login</strong> — paste the text instead.
+      </p>
+      <textarea id="jd-fetched" placeholder="Fetched job description will appear here — review and edit before generating." style="min-height:140px;margin-top:10px;display:none;"></textarea>
     </div>
 
-    <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()" style="margin-top:16px;">
+    <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()" style="margin-top:10px;width:100%;justify-content:center;font-size:14px;padding:12px 20px;">
       Generate Tailored Resume
     </button>
   </div>
 
   <!-- Result panel (hidden until generated) -->
   <div class="card" id="result-panel" style="display:none;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-      <h2 style="margin-bottom:0;">Your Tailored Resume</h2>
-      <button class="btn btn-success" id="btn-download" onclick="downloadPDF()">
-        Download PDF
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
+      <div>
+        <h2 style="font-size:17px;font-weight:700;color:var(--navy);margin-bottom:3px;">Your Tailored Resume</h2>
+        <p style="font-size:12px;color:var(--muted);">Saved to history. Download the PDF for the formatted two-column version.</p>
+      </div>
+      <button id="btn-download" onclick="downloadPDF()">
+        ↓ Download PDF
       </button>
     </div>
 
-    <pre id="result-text" style="
-      font-family:'Inter',sans-serif;
-      font-size:13px;
-      line-height:1.6;
-      color:var(--text);
-      white-space:pre-wrap;
-      background:var(--light);
-      padding:20px;
-      border-radius:8px;
-      border:1px solid var(--border);
-      max-height:400px;
-      overflow-y:auto;
-    "></pre>
+    <div id="result-text"></div>
 
-    <p style="font-size:12px;color:var(--muted);margin-top:10px;">
-      Saved to history. Download PDF to get the formatted two-column version.
-    </p>
-
-    <!-- Inline refinement chat -->
+    <!-- Inline refinement chat — auto-opens after generation -->
     <div id="refine-panel" style="display:none;">
       <div class="refine-header">
-        AI Feedback <span class="badge">Live</span>
+        🤖 AI Resume Coach <span class="live-badge">Live</span>
       </div>
       <div id="refine-messages"></div>
       <div id="refine-input-row">
-        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume..."></textarea>
+        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume…"></textarea>
         <button id="btn-refine-send" onclick="sendRefine()">Send</button>
       </div>
     </div>
@@ -263,25 +407,38 @@
   requireAuth();
 
   let currentRecordId = null;
-  let refineHistory = [];
-  let jdMode = "paste";
+  let refineHistory   = [];
+  let jdMode          = "paste";
+
+  // Configure marked for safe inline rendering
+  if (typeof marked !== "undefined") {
+    marked.setOptions({ breaks: true, gfm: true });
+  }
+
+  // ── Step indicator ─────────────────────────────────────────────────────────
+
+  function setStep(n) {
+    for (let i = 1; i <= 4; i++) {
+      const el = document.getElementById(`step-${i}`);
+      if (!el) continue;
+      el.className = "step" + (i < n ? " done" : i === n ? " active" : "");
+    }
+  }
 
   // ── JD mode toggle ─────────────────────────────────────────────────────────
 
   function setMode(mode) {
     jdMode = mode;
     document.getElementById("btn-mode-paste").classList.toggle("active", mode === "paste");
-    document.getElementById("btn-mode-url").classList.toggle("active", mode === "url");
+    document.getElementById("btn-mode-url").classList.toggle("active",   mode === "url");
     document.getElementById("jd-paste-area").style.display = mode === "paste" ? "block" : "none";
-    document.getElementById("jd-url-area").style.display = mode === "url" ? "block" : "none";
+    document.getElementById("jd-url-area").style.display   = mode === "url"   ? "block" : "none";
   }
 
   function getJDText() {
-    if (jdMode === "paste") {
-      return document.getElementById("jd").value.trim();
-    } else {
-      return document.getElementById("jd-fetched").value.trim();
-    }
+    return jdMode === "paste"
+      ? document.getElementById("jd").value.trim()
+      : document.getElementById("jd-fetched").value.trim();
   }
 
   async function fetchJD() {
@@ -290,7 +447,7 @@
 
     const btn = document.getElementById("btn-fetch");
     btn.disabled = true;
-    btn.textContent = "Fetching...";
+    btn.textContent = "Fetching…";
 
     try {
       const res = await apiFetch("/api/tailor/fetch-jd", {
@@ -300,7 +457,7 @@
       const ta = document.getElementById("jd-fetched");
       ta.value = res.text;
       ta.style.display = "block";
-      showAlert("alert-box", "Job description fetched — review and edit if needed, then click Generate.", "success");
+      showAlert("alert-box", "✓ Job description fetched — review and edit if needed, then click Generate.", "success");
     } catch (e) {
       showAlert("alert-box", e.message, "error");
     } finally {
@@ -320,7 +477,8 @@
 
     const btn = document.getElementById("btn-tailor");
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Generating...`;
+    btn.innerHTML = `<span class="spinner"></span> Generating…`;
+    setStep(2);
 
     try {
       const res = await apiFetch("/api/tailor/", {
@@ -329,17 +487,18 @@
       });
 
       currentRecordId = res.id;
-      refineHistory = [];
+      refineHistory   = [];
 
       document.getElementById("result-text").textContent = res.tailored_content;
       document.getElementById("result-panel").style.display = "block";
       document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+      setStep(3);
 
-      // Kick off the inline refinement chat automatically
       startRefineChat();
 
     } catch (e) {
       showAlert("alert-box", e.message, "error");
+      setStep(1);
     } finally {
       btn.disabled = false;
       btn.innerHTML = "Generate Tailored Resume";
@@ -348,10 +507,26 @@
 
   // ── Refinement chat ────────────────────────────────────────────────────────
 
+  function renderMarkdown(text) {
+    if (typeof marked !== "undefined") {
+      const raw = marked.parse(text, { breaks: true, gfm: true });
+      // Sanitize with DOMPurify if available, otherwise allow as-is (source is our own Claude API)
+      return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+    }
+    // Fallback: escape HTML and convert newlines
+    return text
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/\n/g, "<br>");
+  }
+
   function addMessage(text, role) {
     const div = document.createElement("div");
     div.className = "msg " + role;
-    div.textContent = text;
+    if (role === "coach") {
+      div.innerHTML = renderMarkdown(text);
+    } else {
+      div.textContent = text;
+    }
     document.getElementById("refine-messages").appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "nearest" });
     return div;
@@ -364,7 +539,6 @@
     div.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
     document.getElementById("refine-messages").appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    return div;
   }
 
   async function startRefineChat() {
@@ -378,32 +552,29 @@
       });
 
       document.getElementById("typing-indicator")?.remove();
-      refineHistory.push({ role: "user", content: "start" });
+      refineHistory.push({ role: "user",      content: "start" });
       refineHistory.push({ role: "assistant", content: res.reply });
       addMessage(res.reply, "coach");
 
       if (res.updated_content) {
         document.getElementById("result-text").textContent = res.updated_content;
-        const notice = document.createElement("div");
-        notice.className = "msg update-notice";
-        notice.textContent = "✓ Resume updated above";
-        document.getElementById("refine-messages").appendChild(notice);
+        addUpdateNotice();
       }
     } catch (e) {
       document.getElementById("typing-indicator")?.remove();
-      addMessage("Couldn't load feedback — you can still download your PDF.", "coach");
+      addMessage("Couldn't load AI feedback — you can still download your PDF.", "coach");
     }
   }
 
   async function sendRefine() {
     if (!currentRecordId) return;
-    const input = document.getElementById("refine-input");
+    const input   = document.getElementById("refine-input");
     const message = input.value.trim();
     if (!message) return;
 
     const btn = document.getElementById("btn-refine-send");
     btn.disabled = true;
-    input.value = "";
+    input.value  = "";
 
     refineHistory.push({ role: "user", content: message });
     addMessage(message, "user");
@@ -421,11 +592,7 @@
 
       if (res.updated_content) {
         document.getElementById("result-text").textContent = res.updated_content;
-        const notice = document.createElement("div");
-        notice.className = "msg update-notice";
-        notice.textContent = "✓ Resume updated above";
-        document.getElementById("refine-messages").appendChild(notice);
-        notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        addUpdateNotice();
       }
     } catch (e) {
       document.getElementById("typing-indicator")?.remove();
@@ -436,7 +603,15 @@
     }
   }
 
-  // Allow Enter to send (Shift+Enter for newline)
+  function addUpdateNotice() {
+    const notice = document.createElement("div");
+    notice.className = "msg update-notice";
+    notice.textContent = "✓ Resume updated above";
+    document.getElementById("refine-messages").appendChild(notice);
+    notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // Enter to send, Shift+Enter for newline
   document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("refine-input").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -452,24 +627,38 @@
     if (!currentRecordId) return;
     const btn = document.getElementById("btn-download");
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner" style="border-top-color:white;border-color:rgba(255,255,255,0.3)"></span> Building PDF...`;
+    btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building PDF…`;
+
     try {
       const res = await fetch(`/api/tailor/${currentRecordId}/pdf`, {
         headers: { "Authorization": `Bearer ${getToken()}` }
       });
-      if (!res.ok) throw new Error("PDF generation failed");
+      if (!res.ok) throw new Error("PDF generation failed — please try again.");
+
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = "tailored_resume.pdf";
+
+      // Append to DOM before clicking — required for Firefox and Safari
+      const a = document.createElement("a");
+      a.href          = url;
+      a.download      = "tailored_resume.pdf";
+      a.style.display = "none";
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 1500);
+
+      setStep(4);
+      showAlert("alert-box", "✓ PDF saved — check your Downloads folder (or your browser's download bar at the bottom of the screen).", "success");
+
     } catch (e) {
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "Download PDF";
+      btn.innerHTML = "↓ Download PDF";
     }
   }
 </script>
