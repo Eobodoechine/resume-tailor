@@ -145,20 +145,11 @@ APP_URL = "https://resume-tailor-ogop.onrender.com"
 
 def _send_magic_link(admin_client, email: str):
     """
-    Send a magic link email.
-
-    Strategy (in order of preference):
-    1. Resend HTTP API — if RESEND_API_KEY is set, generate a Supabase magic link
-       URL via the admin API and deliver it through Resend's reliable HTTP endpoint.
-       This bypasses Supabase's SMTP layer entirely, giving us Resend's free-tier
-       3,000 emails/month with no 2/hour cap.
-    2. Supabase anon OTP — fallback when RESEND_API_KEY is absent. Uses Supabase's
-       built-in mailer (2/hour cap on free plan).
+    Send a magic link via Supabase anon OTP.
+    Supabase is configured with Gmail SMTP as custom SMTP provider,
+    giving us 500 emails/day with no per-hour cap.
     """
-    if RESEND_API_KEY:
-        _send_via_resend(admin_client, email)
-    else:
-        _send_via_supabase_otp(email)
+    _send_via_supabase_otp(email)
 
 
 def _send_via_resend(admin_client, email: str):
