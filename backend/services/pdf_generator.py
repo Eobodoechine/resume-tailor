@@ -43,6 +43,13 @@ def _parse_resume_text(text: str, profile: dict) -> dict:
         "AWARDS": "awards",
     }
 
+    # Regex to strip common qualifier prefixes Claude often generates, e.g.
+    # "PROFESSIONAL SUMMARY" → "SUMMARY", "CORE SKILLS" → "SKILLS".
+    _prefix_re = re.compile(
+        r'^(PROFESSIONAL|CORE|KEY|TECHNICAL|ADDITIONAL|RELEVANT|WORK|CAREER)\s+',
+        re.IGNORECASE,
+    )
+
     lines = text.strip().split("\n")
     header_lines = []
     body_started = False
@@ -52,9 +59,12 @@ def _parse_resume_text(text: str, profile: dict) -> dict:
         if not line:
             continue
 
+        # Normalize: strip leading qualifier so "PROFESSIONAL EXPERIENCE" → "EXPERIENCE"
+        normalized = _prefix_re.sub("", line.upper())
+
         matched_section = None
         for keyword, section_name in section_keywords.items():
-            if line.upper().startswith(keyword):
+            if normalized.startswith(keyword):
                 matched_section = section_name
                 break
 

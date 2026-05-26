@@ -110,7 +110,7 @@ async function apiUpload(path, formData) {
 // Shared helper for any endpoint that returns binary content (PDF, etc.).
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
-async function apiDownload(path, filename) {
+async function apiDownload(path, fallbackFilename) {
   const res = await fetch(API + path, { credentials: "include" });
   if (res.status === 401) {
     clearToken();
@@ -119,6 +119,12 @@ async function apiDownload(path, filename) {
     throw new RedirectingError();
   }
   if (!res.ok) throw new Error("Download failed — please try again.");
+
+  // Prefer the server-supplied filename from Content-Disposition header.
+  // The backend returns e.g. filename="TribeAI_AIWorkflowStrategist.pdf".
+  const cd = res.headers.get("Content-Disposition");
+  const serverFilename = cd?.match(/filename="([^"]+)"/)?.[1];
+  const filename = serverFilename || fallbackFilename;
 
   const blob = await res.blob();
   const url  = URL.createObjectURL(blob);
