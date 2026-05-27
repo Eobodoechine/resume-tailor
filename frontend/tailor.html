@@ -426,7 +426,7 @@
 
 </div>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js"></script>
 <script>
   requireAuth();
 
@@ -738,11 +738,6 @@
 
   // ── PDF download ───────────────────────────────────────────────────────────
 
-  // Build a safe filename segment: keep word chars, spaces→underscores, hyphens.
-  function safeFilePart(s) {
-    return (s || "").replace(/[^\w\s\-]/g, "").trim().replace(/\s+/g, "_") || "";
-  }
-
   async function downloadPDF() {
     if (!currentRecordId) return;
     const btn = document.getElementById("btn-download");
@@ -750,15 +745,9 @@
     btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building PDF…`;
 
     try {
-      // Build a meaningful filename from the form inputs so Chrome's a.download
-      // attribute produces "Goldman_Sachs_Analyst.pdf" instead of a UUID.
-      const company  = document.getElementById("company").value.trim();
-      const jobTitle = document.getElementById("job-title").value.trim();
-      const c = safeFilePart(company)  || "tailored";
-      const r = safeFilePart(jobTitle) || "resume";
-      const filename = `${c}_${r}.pdf`;
-
-      await apiDownload(`/api/tailor/${currentRecordId}/pdf`, filename);
+      // apiDownload() in app.js handles 401 redirect and blob trigger —
+      // no more duplicated raw fetch logic here.
+      await apiDownload(`/api/tailor/${currentRecordId}/pdf`, "tailored_resume.pdf");
       setStep(4);
       showAlert("alert-box", "✓ PDF saved — check your Downloads folder (or your browser's download bar at the bottom of the screen).", "success");
     } catch (e) {

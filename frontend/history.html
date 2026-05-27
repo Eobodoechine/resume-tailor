@@ -49,7 +49,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js"></script>
 <script>
   requireAuth();
 
@@ -128,18 +128,9 @@
       `Showing ${currentOffset} of ${totalCount}`;
   }
 
-  // Sanitize a company / role string into a safe filename segment:
-  // keep word chars, spaces→underscores, hyphens; strip everything else.
-  function safeFilePart(s) {
-    return (s || "").replace(/[^\w\s\-]/g, "").trim().replace(/\s+/g, "_") || "";
-  }
-
   async function downloadPDF(id, company, role) {
     try {
-      const c = safeFilePart(company) || "tailored";
-      const r = safeFilePart(role)    || "resume";
-      const filename = `${c}_${r}.pdf`;
-      await apiDownload(`/api/tailor/${id}/pdf`, filename);
+      await apiDownload(`/api/tailor/${id}/pdf`, `${company}_${role}.pdf`);
     } catch (e) {
       if (e && e.redirecting) return;
       alert(e.message);

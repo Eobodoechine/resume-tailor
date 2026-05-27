@@ -1,11 +1,4 @@
 import os
-import logging
-
-# Configure root logger so all logger.info/error calls appear in Render logs.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles

@@ -106,97 +106,38 @@ async function apiUpload(path, formData) {
   return json;
 }
 
-// ── File download ──────────────────────────────────────────────────────────
+// ── Blob / file download ───────────────────────────────────────────────────
 // Shared helper for any endpoint that returns binary content (PDF, etc.).
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
-//
-// Root cause of the UUID-filename bug (history):
-//   The URL /api/tailor/{UUID}/pdf has no meaningful filename segment.
-//   When Chrome can't extract a filename from Content-Disposition (stripped by
-//   BaseHTTPMiddleware in the middleware stack), it falls back to URL-path naming:
-//   "pdf" has no extension → Chrome walks up to the UUID segment → UUID filename.
-//
-// The fix (VERSION 7):
-//   HEAD first, then a.click() for the real download.
-//
-//   Key insight: a.download only works for same-origin URLs. Chrome's restriction
-//   on downloads without user activation applies to CROSS-origin and blob: URLs.
-//   For same-origin URLs, a.click() is allowed without user activation, so we
-//   can safely await the HEAD check before firing the click — no ~5s window to
-//   worry about.
-//
-//   Order:
-//   1. Await HEAD — fast (~200 ms, DB lookup only, no LibreOffice).
-//      Validates auth and record existence before we start anything.
-//   2. Fire a.click() only if HEAD passes — GET starts LibreOffice, Chrome
-//      downloads the file in the background.
-//
-//   Why not click-then-HEAD (VERSION 6)?
-//   - a.click() starts the 30-60s LibreOffice GET, tying up the Render worker.
-//   - HEAD fires concurrently and can hit the per-IP rate limit or get a 503.
-//   - User sees "Download failed" even though the download was already triggered.
-//
-//   Why a.download = suggestedFilename (non-empty)?
-//   - Bypasses BaseHTTPMiddleware stripping Content-Disposition entirely.
-//   - Chrome uses the attribute value as the filename directly.
-//   - Empty string = "derive from URL path" = UUID filename bug.
-// VERSION: 7
-async function apiDownload(path, suggestedFilename) {
-  console.log(`[download] START  path=${path}  filename=${suggestedFilename}`);
-
-  // ── 1. HEAD: auth + record check (fast, no LibreOffice) ──────────────────
-  console.log(`[download] firing HEAD ${path}`);
-  let res;
-  try {
-    res = await fetch(API + path, { credentials: "include", method: "HEAD" });
-  } catch (networkErr) {
-    console.error(`[download] HEAD network error:`, networkErr);
-    throw new Error("Download failed — network error. Check your connection.");
-  }
-  console.log(`[download] HEAD response: status=${res.status} ok=${res.ok}`);
-  console.log(`[download] HEAD headers: Content-Disposition="${res.headers.get("Content-Disposition")}" Content-Type="${res.headers.get("Content-Type")}"`);
-
+async function apiDownload(path, fallbackFilename) {
+  const res = await fetch(API + path, { credentials: "include" });
   if (res.status === 401) {
-    console.warn(`[download] 401 — clearing session and redirecting to login`);
     clearToken();
     fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
     window.location.href = "/";
     throw new RedirectingError();
   }
-  if (!res.ok) {
-    console.error(`[download] HEAD failed: ${res.status} ${res.statusText}`);
-    throw new Error(`Download failed (${res.status}) — please try again.`);
-  }
+  if (!res.ok) throw new Error("Download failed — please try again.");
 
-  // ── 2. Fire download — same-origin + a.download doesn't need user activation ──
-  console.log(`[download] HEAD OK — creating anchor and firing click`);
-  const a = document.createElement("a");
-  a.href = API + path;
-  // Non-empty download attribute → Chrome uses this as the filename directly,
-  // bypassing Content-Disposition (which BaseHTTPMiddleware strips).
-  // IMPORTANT: never set a.download = "" — Chrome falls back to URL-path naming
-  // which produces the UUID segment as filename.
-  if (suggestedFilename) {
-    a.download = suggestedFilename;
-  } else {
-    console.warn(`[download] no suggestedFilename — Chrome will derive name from URL`);
-  }
+  // Prefer the server-supplied filename from Content-Disposition header.
+  // The backend returns e.g. filename="TribeAI_AIWorkflowStrategist.pdf".
+  const cd = res.headers.get("Content-Disposition");
+  const serverFilename = cd?.match(/filename="([^"]+)"/)?.[1];
+  const filename = serverFilename || fallbackFilename;
+
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href          = url;
+  a.download      = filename;
   a.style.display = "none";
   document.body.appendChild(a);
-  // Log exactly what Chrome will use as the filename:
-  //   a.download (non-empty, same-origin) → Chrome saves with that exact string
-  //   a.download (empty string)           → Chrome derives from URL path → UUID bug
-  //   a.download (not set)                → Chrome uses Content-Disposition header
-  console.log(`[download] CHROME WILL SAVE AS: "${a.download || "(no download attr — using Content-Disposition)"}"`);
-  console.log(`[download] href="${a.href}"  download="${a.download}"`);
-  console.log(`[download] a.click() firing now — GET will start LibreOffice on server`);
   a.click();
   setTimeout(() => {
-    if (a.parentNode) a.parentNode.removeChild(a);
-    console.log(`[download] anchor removed from DOM`);
-  }, 100);
-  console.log(`[download] DONE — file download initiated in browser`);
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1500);
 }
 
 // ── Alert helper ───────────────────────────────────────────────────────────
