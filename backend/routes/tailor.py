@@ -5,6 +5,10 @@ Also supports: fetching a JD from a URL, and inline refinement chat on a tailore
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 import json as _json
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 import asyncio
@@ -562,8 +566,8 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
     }
 
 
-@router.get("/{record_id}/pdf")
-@limiter.limit("20/minute")
+@router.api_route("/{record_id}/pdf", methods=["GET", "HEAD"])
+@limiter.limit("60/minute")
 def download_pdf(
     request: Request,
     record_id: uuid.UUID,   # FastAPI validates and returns 422 for non-UUID input (TD-03)
@@ -571,37 +575,80 @@ def download_pdf(
 ):
     """Generate and return a PDF for a tailored resume record.
 
+    Accepts both GET and HEAD.  The frontend sends HEAD first to validate auth
+    and reachability without triggering LibreOffice, then fires a direct anchor
+    click for the real GET.  This avoids Chrome's ~5-second user-activation
+    window that caused blob-URL downloads to save with UUID filenames.
+
     Renders via the FDE DOCX renderer (LibreOffice headless → PDF).
     Rate-limited because LibreOffice is CPU-heavy and a single user could
     otherwise spike the Render free instance by hammering this endpoint.
     """
-    db = get_client(ctx.token)
+    logger.info(f"[download_pdf] START  method={request.method}  record_id={record_id}  user={ctx.user.id}")
 
-    result = db.table("tailored_resumes") \
-        .select("*") \
-        .eq("id", str(record_id)) \
-        .eq("user_id", str(ctx.user.id)) \
-        .execute()
+    logger.info(f"[download_pdf] querying tailored_resumes for record_id={record_id}")
+    try:
+        db = get_client(ctx.token)
+        result = db.table("tailored_resumes") \
+            .select("*") \
+            .eq("id", str(record_id)) \
+            .eq("user_id", str(ctx.user.id)) \
+            .execute()
+        logger.info(f"[download_pdf] DB query returned {len(result.data)} row(s)")
+    except Exception as e:
+        logger.error(f"[download_pdf] DB query FAILED: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     if not result.data:
+        logger.warning(f"[download_pdf] 404 — no record found for record_id={record_id} user={ctx.user.id}")
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
-    profile = profile_result.data[0] if profile_result.data else {}
+    logger.info(f"[download_pdf] record found: company={record.get('company')!r}  job_title={record.get('job_title')!r}")
 
+    company = _safe_filename_part(record.get("company", ""), "tailored")
+    role = _safe_filename_part(record.get("job_title", ""), "resume")
+    filename = f"{company}_{role}.pdf"
+    disposition = f"attachment; filename=\"{filename}\""
+    logger.info(f"[download_pdf] filename resolved to: {filename}")
+
+    # HEAD: validate ownership + return headers only — skip LibreOffice.
+    if request.method == "HEAD":
+        logger.info(f"[download_pdf] HEAD — returning 200 with headers only")
+        return Response(
+            content=b"",
+            media_type="application/pdf",
+            headers={"Content-Disposition": disposition},
+        )
+
+    logger.info(f"[download_pdf] GET — fetching profile for user={ctx.user.id}")
+    try:
+        profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+        profile = profile_result.data[0] if profile_result.data else {}
+        logger.info(f"[download_pdf] profile fetched: has_data={bool(profile_result.data)}")
+    except Exception as e:
+        logger.error(f"[download_pdf] profile fetch FAILED: {e}\n{traceback.format_exc()}")
+        profile = {}
+
+    logger.info(f"[download_pdf] parsing tailored_content into resume_data")
     try:
         resume_data = text_to_resume_data(record["tailored_content"], profile)
-        pdf_bytes = get_renderer().render(resume_data)
+        logger.info(f"[download_pdf] resume_data parsed OK")
     except Exception as e:
+        logger.error(f"[download_pdf] text_to_resume_data FAILED: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Resume parse failed: {str(e)}")
+
+    logger.info(f"[download_pdf] calling renderer (LibreOffice)")
+    try:
+        pdf_bytes = get_renderer().render(resume_data)
+        logger.info(f"[download_pdf] renderer returned {len(pdf_bytes)} bytes")
+    except Exception as e:
+        logger.error(f"[download_pdf] renderer FAILED: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
-    company = _safe_filename_part(record.get("company", ""), "resume")
-    role = _safe_filename_part(record.get("job_title", ""), "role")
-    filename = f"{company}_{role}.pdf"
-
+    logger.info(f"[download_pdf] returning PDF response  filename={filename}  size={len(pdf_bytes)}")
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+        headers={"Content-Disposition": disposition},
     )
