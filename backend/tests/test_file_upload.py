@@ -55,14 +55,17 @@ class TestParseExperience:
     """Ensure _parse_experience no longer misclassifies short bullets as headers."""
 
     def _parse(self, text: str):
-        from services.pdf_generator import _parse_experience
+        # resume_parser is the live module; pdf_generator is archived
+        from services.resume_parser import _parse_experience
         return _parse_experience(text)
 
     def test_pipe_separator_detected_as_header(self):
         text = "Senior Manager | Acme Corp | Jan 2020 – Dec 2022\n• Led a team of 10"
         entries = self._parse(text)
         assert len(entries) == 1
-        assert "Acme Corp" in entries[0]["header"]
+        # resume_parser returns ExperienceRole with title/company/dates keys (not "header")
+        assert entries[0]["company"] == "Acme Corp"
+        assert entries[0]["title"] == "Senior Manager"
         assert entries[0]["bullets"] == ["Led a team of 10"]
 
     def test_short_bullet_not_mistaken_for_header(self):
@@ -89,8 +92,9 @@ class TestParseExperience:
         )
         entries = self._parse(text)
         assert len(entries) == 2
-        assert "BigCo" in entries[0]["header"]
-        assert "SmallCo" in entries[1]["header"]
+        # resume_parser returns ExperienceRole with title/company/dates keys (not "header")
+        assert entries[0]["company"] == "BigCo"
+        assert entries[1]["company"] == "SmallCo"
         assert len(entries[0]["bullets"]) == 2
         assert len(entries[1]["bullets"]) == 1
 

@@ -12,22 +12,25 @@ import re
 import json
 import ipaddress
 import socket
+import uuid
 import httpx
+import anthropic
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 from dependencies.auth import require_user, AuthContext
 from services.supabase_client import get_client, get_admin_client
 from services import claude as claude_service
-from services.pdf_generator import generate_pdf
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from services.resume_parser import text_to_resume_data
+from renderers.registry import get_renderer
+from config import CLAUDE_MODEL
 from limiter import limiter
-import anthropic
 
 router = APIRouter(prefix="/api/tailor", tags=["tailor"])
-ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+ai_client = claude_service.client  # shared Anthropic client — no duplicate connection pool
 
 MAX_JD_LENGTH = 12_000   # ~3,000 tokens
 MAX_HISTORY_TURNS = 20
+_API_TIMEOUT = claude_service.API_TIMEOUT
 
 
 def _safe_filename_part(value: str, fallback: str) -> str:
@@ -132,6 +135,7 @@ class TailorRequest(BaseModel):
     job_description: str = Field(..., max_length=MAX_JD_LENGTH)
     job_title: Optional[str] = Field("", max_length=200)
     company: Optional[str] = Field("", max_length=200)
+    max_roles: int = Field(3, ge=1, le=10, description="Max EXPERIENCE roles to include (default 3). Raise if the user explicitly asks for more.")
 
 
 class FetchJDRequest(BaseModel):
@@ -148,11 +152,11 @@ class HistoryMessage(BaseModel):
     into the conversation history forwarded to Claude.
     """
     role: Literal["user", "assistant"]
-    content: str = Field(..., max_length=4000)
+    content: str = Field(..., max_length=20000)
 
 
 class RefineMessage(BaseModel):
-    message: str = Field(..., max_length=4000)
+    message: str = Field(..., max_length=20000)
     history: list[HistoryMessage] = Field(default=[], max_length=40)
 
 
@@ -180,8 +184,11 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
             job_description=body.job_description,
             profile=profile,
             job_title=body.job_title or "",
-            company=body.company or ""
+            company=body.company or "",
+            max_roles=body.max_roles,
         )
+    except anthropic.APITimeoutError:
+        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
@@ -295,12 +302,13 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
 
 @router.post("/stream")
 @limiter.limit("10/minute")
-def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext = Depends(require_user)):
+async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext = Depends(require_user)):
     """
     Streaming variant of POST /api/tailor/.
 
     Returns an SSE stream of text chunks so the frontend can render the
     resume progressively instead of waiting 10-30s for a blocking response.
+    Uses an async generator so the event loop is never blocked (TD-17).
 
     SSE event format:
         data: {"chunk": "text"}\n\n      — partial resume text
@@ -310,40 +318,64 @@ def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext = Depe
     db = get_client(ctx.token)
     admin = get_admin_client()
 
-    master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
+    # Wrap sync Supabase calls in to_thread() so they don't block the event loop (TD-17).
+    master_result = await asyncio.to_thread(
+        lambda: db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
+    )
     if not master_result.data or not master_result.data[0]["content"]:
         raise HTTPException(status_code=400, detail="No master resume found. Upload files and synthesize first.")
 
     master_content = master_result.data[0]["content"]
-    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+    profile_result = await asyncio.to_thread(
+        lambda: db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+    )
     profile = profile_result.data[0] if profile_result.data else {}
 
-    def _generate():
+    # Capture local refs so the async generator closure doesn't hold the full request scope
+    user_id   = str(ctx.user.id)
+    job_title = body.job_title
+    company   = body.company
+    job_desc  = body.job_description
+    max_roles = body.max_roles
+
+    async def _generate():
         full_chunks: list[str] = []
         try:
-            for chunk in claude_service.stream_tailor_resume(
+            async for chunk in claude_service.stream_tailor_resume_async(
                 master_resume=master_content,
-                job_description=body.job_description,
+                job_description=job_desc,
                 profile=profile,
-                job_title=body.job_title or "",
-                company=body.company or "",
+                job_title=job_title or "",
+                company=company or "",
+                max_roles=max_roles,
             ):
                 full_chunks.append(chunk)
                 yield f"data: {_json.dumps({'chunk': chunk})}\n\n"
+        except anthropic.APITimeoutError:
+            yield f"data: {_json.dumps({'error': 'AI request timed out. Please try again.'})}\n\n"
+            return
         except Exception as e:
             yield f"data: {_json.dumps({'error': str(e)})}\n\n"
             return
 
-        # Save completed resume to DB after streaming finishes
+        # Save completed resume to DB after streaming finishes.
+        # asyncio.to_thread keeps the sync Supabase call off the event loop (TD-17).
+        # Client-disconnect note: if the SSE client disconnects before all chunks
+        # are yielded, Starlette may cancel this generator — the insert below will
+        # not run and the tailored resume will not be saved.  This is acceptable
+        # for a streaming endpoint; the user can re-trigger the stream to get a
+        # fresh record.
         tailored_text = "".join(full_chunks)
         try:
-            insert_result = admin.table("tailored_resumes").insert({
-                "user_id": str(ctx.user.id),
-                "job_title": body.job_title,
-                "company": body.company,
-                "job_description": body.job_description,
-                "tailored_content": tailored_text,
-            }).execute()
+            insert_result = await asyncio.to_thread(
+                lambda: admin.table("tailored_resumes").insert({
+                    "user_id":          user_id,
+                    "job_title":        job_title,
+                    "company":          company,
+                    "job_description":  job_desc,
+                    "tailored_content": tailored_text,
+                }).execute()
+            )
             record_id = insert_result.data[0]["id"] if insert_result.data else None
         except Exception:
             record_id = None
@@ -425,7 +457,12 @@ def get_history(
 
 @router.post("/{record_id}/refine")
 @limiter.limit("20/minute")
-def refine_tailored(request: Request, record_id: str, body: RefineMessage, ctx: AuthContext = Depends(require_user)):
+def refine_tailored(
+    request: Request,
+    record_id: uuid.UUID,   # FastAPI validates and returns 422 for non-UUID input (TD-03)
+    body: RefineMessage,
+    ctx: AuthContext = Depends(require_user),
+):
     """
     Inline refinement chat for a specific tailored resume.
     Claude asks targeted questions and rewrites the resume when the user provides new info.
@@ -435,7 +472,7 @@ def refine_tailored(request: Request, record_id: str, body: RefineMessage, ctx: 
 
     result = db.table("tailored_resumes") \
         .select("*") \
-        .eq("id", record_id) \
+        .eq("id", str(record_id)) \
         .eq("user_id", str(ctx.user.id)) \
         .execute()
     if not result.data:
@@ -444,6 +481,10 @@ def refine_tailored(request: Request, record_id: str, body: RefineMessage, ctx: 
     record = result.data[0]
     profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
+
+    # Fetch master resume so Claude has full career context without the user having to paste it
+    master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
+    master_content = master_result.data[0].get("content", "") if master_result.data else ""
 
     job_title = (record.get("job_title") or "").strip()
     company = (record.get("company") or "").strip()
@@ -456,6 +497,8 @@ def refine_tailored(request: Request, record_id: str, body: RefineMessage, ctx: 
     else:
         role_label = "this role"
 
+    master_section = f"\nMaster resume (full career history for reference):\n{master_content[:6000]}\n" if master_content else ""
+
     system_prompt = f"""You are a resume coach helping {profile.get('full_name', 'the user')} refine their tailored resume for {role_label}.
 
 Job Description:
@@ -463,7 +506,7 @@ Job Description:
 
 Current tailored resume:
 {record.get('tailored_content') or ''}
-
+{master_section}
 Your job:
 1. Start by identifying the single biggest gap between this resume and the job description
 2. Ask ONE targeted question at a time to surface better metrics, achievements, or alignment
@@ -471,6 +514,7 @@ Your job:
 4. Then ask another sharpening question OR confirm the resume is strong
 
 Focus on: missing metrics, weak verbs, skills the JD emphasizes that aren't prominent, or summary alignment.
+You already have the user's full master resume above — never ask them to paste or upload it.
 
 If you produce an improved resume, output it at the END of your reply in this exact format:
 UPDATE_TAILORED_RESUME:
@@ -490,7 +534,10 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
             max_tokens=3000,
             system=system_prompt,
             messages=messages,
+            timeout=_API_TIMEOUT,
         )
+    except anthropic.APITimeoutError:
+        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
@@ -504,7 +551,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
         updated_content = reply[content_start:update_end].strip()
         admin.table("tailored_resumes").update({
             "tailored_content": updated_content
-        }).eq("id", record_id).execute()
+        }).eq("id", str(record_id)).execute()
         visible_reply = reply[:update_start].strip()
     else:
         visible_reply = reply
@@ -517,17 +564,22 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
 
 @router.get("/{record_id}/pdf")
 @limiter.limit("20/minute")
-def download_pdf(request: Request, record_id: str, ctx: AuthContext = Depends(require_user)):
+def download_pdf(
+    request: Request,
+    record_id: uuid.UUID,   # FastAPI validates and returns 422 for non-UUID input (TD-03)
+    ctx: AuthContext = Depends(require_user),
+):
     """Generate and return a PDF for a tailored resume record.
 
-    Rate-limited because WeasyPrint is CPU-heavy and a single user could
+    Renders via the FDE DOCX renderer (LibreOffice headless → PDF).
+    Rate-limited because LibreOffice is CPU-heavy and a single user could
     otherwise spike the Render free instance by hammering this endpoint.
     """
     db = get_client(ctx.token)
 
     result = db.table("tailored_resumes") \
         .select("*") \
-        .eq("id", record_id) \
+        .eq("id", str(record_id)) \
         .eq("user_id", str(ctx.user.id)) \
         .execute()
 
@@ -539,7 +591,8 @@ def download_pdf(request: Request, record_id: str, ctx: AuthContext = Depends(re
     profile = profile_result.data[0] if profile_result.data else {}
 
     try:
-        pdf_bytes = generate_pdf(record["tailored_content"], profile)
+        resume_data = text_to_resume_data(record["tailored_content"], profile)
+        pdf_bytes = get_renderer().render(resume_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 

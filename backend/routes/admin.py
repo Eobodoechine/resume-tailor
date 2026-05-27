@@ -2,12 +2,16 @@
 Admin routes: view and action on access requests.
 Only accessible to the admin email defined in config OR users with is_admin=TRUE.
 """
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from dependencies.auth import require_user, AuthContext
 from services.supabase_client import get_admin_client
 from config import ADMIN_EMAIL
+from limiter import limiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -51,10 +55,12 @@ class ApprovalBody(BaseModel):
 
 
 @router.post("/approve")
-def approve_request(body: ApprovalBody, _ctx: AuthContext = Depends(require_admin)):
+@limiter.limit("30/minute")
+def approve_request(request: Request, body: ApprovalBody, _ctx: AuthContext = Depends(require_admin)):
     """
     Approve an access request.
-    Updates status to 'approved' and sends a magic link invite to the user.
+    DB status is updated FIRST (idempotent), then invite is sent.
+    If the invite fails the user is still approved and can log in via /login (TD-05).
     """
     admin = get_admin_client()
 
@@ -65,21 +71,32 @@ def approve_request(body: ApprovalBody, _ctx: AuthContext = Depends(require_admi
     req = result.data[0]
     email = req["email"]
 
-    try:
-        admin.auth.admin.invite_user_by_email(email)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send invite: {str(e)}")
-
+    # Update DB FIRST — approved status is the source of truth.
+    # If the invite email fails below, the user is still marked approved
+    # and can request a magic link via the login page.
     admin.table("access_requests").update({
         "status": "approved",
         "reviewed_at": datetime.now(timezone.utc).isoformat()
     }).eq("id", body.request_id).execute()
 
+    # Send invite — failure is non-fatal since status is already approved
+    try:
+        admin.auth.admin.invite_user_by_email(email)
+    except Exception as e:
+        logger.error("invite failed for %s: %s", email, e)
+        return {
+            "message": (
+                f"Approved, but invite email failed: {str(e)}. "
+                "The user can still log in via the login page."
+            )
+        }
+
     return {"message": f"Invite sent to {email}"}
 
 
 @router.post("/reject")
-def reject_request(body: ApprovalBody, _ctx: AuthContext = Depends(require_admin)):
+@limiter.limit("30/minute")
+def reject_request(request: Request, body: ApprovalBody, _ctx: AuthContext = Depends(require_admin)):
     """Mark an access request as rejected."""
     admin = get_admin_client()
 

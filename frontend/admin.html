@@ -153,7 +153,13 @@
           <td>${u.email}</td>
           <td style="color:var(--muted)">${fmtDate(u.created_at)}</td>
         </tr>`).join("");
-    } catch (e) {}
+    } catch (e) {
+      if (e && e.redirecting) return;
+      document.getElementById("users-body").innerHTML =
+        `<tr><td colspan="3" style="text-align:center;color:var(--error);padding:20px;">
+           Failed to load users: ${e.message}
+         </td></tr>`;
+    }
   }
 
   loadRequests("pending");

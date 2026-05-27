@@ -51,12 +51,14 @@ def _load_helpers():
     from unittest.mock import MagicMock
     sys.modules["docx"] = MagicMock()
 
-    # Also stub the renderers.base import
+    # Ensure real renderers.base is available (pure TypedDicts, no heavy deps).
+    # A minimal stub would be missing ExperienceRole/SkillGroup/etc and cause
+    # ImportError in test_resume_parser.py when pytest collects all files together.
+    for _k in list(sys.modules):
+        if _k == "renderers.base" and not hasattr(sys.modules[_k], "ExperienceRole"):
+            del sys.modules[_k]  # evict any incomplete stub
     if "renderers.base" not in sys.modules:
-        base_stub = types.ModuleType("renderers.base")
-        base_stub.ResumeData = dict
-        base_stub.Renderer = object
-        sys.modules["renderers.base"] = base_stub
+        import renderers.base  # noqa: F401
 
     try:
         import renderers.fde_docx as m

@@ -46,10 +46,15 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — allow_origins=["*"] with allow_credentials=True is invalid per spec.
 # Restrict to the production domain and local dev.
+# Read allowed origins from env so CORS survives URL changes (TD-04).
+# Comma-separated list; falls back to the production URL + local dev.
 ALLOWED_ORIGINS = [
-    "https://resume-tailor-ogop.onrender.com",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "https://resume-tailor-ogop.onrender.com,http://localhost:8000,http://127.0.0.1:8000",
+    ).split(",")
+    if o.strip()
 ]
 
 app.add_middleware(

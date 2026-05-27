@@ -243,6 +243,17 @@ class TestTailorValidation:
 
 
 # ── Streaming endpoint ─────────────────────────────────────────────────────────
+#
+# The route calls stream_tailor_resume_async() — an async generator.
+# Mock it with a real async def that yields chunks so `async for` works.
+
+def _make_async_stream(*chunks):
+    """Return an async generator function that yields the given chunks."""
+    async def _gen(*args, **kwargs):
+        for chunk in chunks:
+            yield chunk
+    return _gen
+
 
 class TestStreamingEndpoint:
     def test_stream_content_type_is_event_stream(self, client, reset_supabase_mocks):
@@ -251,8 +262,8 @@ class TestStreamingEndpoint:
         db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
             {"content": "MASTER RESUME CONTENT"}
         ]
-        claude = sys.modules["services.claude"]
-        claude.stream_tailor_resume.return_value = ["Hello, ", "world!"]
+        import routes.tailor as tailor_mod
+        tailor_mod.claude_service.stream_tailor_resume_async = _make_async_stream("Hello, ", "world!")
         admin.table.return_value.insert.return_value.execute.return_value.data = [
             {"id": "stream-record-456"}
         ]
@@ -269,8 +280,8 @@ class TestStreamingEndpoint:
         db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
             {"content": "MASTER RESUME"}
         ]
-        claude = sys.modules["services.claude"]
-        claude.stream_tailor_resume.return_value = ["chunk_one", "chunk_two"]
+        import routes.tailor as tailor_mod
+        tailor_mod.claude_service.stream_tailor_resume_async = _make_async_stream("chunk_one", "chunk_two")
         admin.table.return_value.insert.return_value.execute.return_value.data = [
             {"id": "abc-123"}
         ]
@@ -297,8 +308,8 @@ class TestStreamingEndpoint:
         db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
             {"content": "MASTER RESUME"}
         ]
-        claude = sys.modules["services.claude"]
-        claude.stream_tailor_resume.return_value = ["text"]
+        import routes.tailor as tailor_mod
+        tailor_mod.claude_service.stream_tailor_resume_async = _make_async_stream("text")
         # Insert returns empty — simulates DB failure
         admin.table.return_value.insert.return_value.execute.return_value.data = []
 
@@ -368,7 +379,7 @@ class TestRefineEndpoint:
         """
         record_data = [
             {
-                "id": "rec-001",
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                 "job_title": "Engineer",
                 "company": "Acme",
                 "job_description": "Build things",
@@ -388,7 +399,7 @@ class TestRefineEndpoint:
         before reaching the Claude API.  This closes the prompt-injection surface.
         """
         res = client.post(
-            "/api/tailor/rec-001/refine",
+            "/api/tailor/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/refine",
             json={
                 "message": "Make it better",
                 "history": [
@@ -401,7 +412,7 @@ class TestRefineEndpoint:
     def test_refine_tool_role_in_history_returns_422(self, client):
         """role='tool' is also an injection vector — must be rejected."""
         res = client.post(
-            "/api/tailor/rec-001/refine",
+            "/api/tailor/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/refine",
             json={
                 "message": "Make it better",
                 "history": [
@@ -415,16 +426,16 @@ class TestRefineEndpoint:
         """More than 40 history entries must be rejected (max_length=40)."""
         history = [{"role": "user", "content": "msg"}] * 41
         res = client.post(
-            "/api/tailor/rec-001/refine",
+            "/api/tailor/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/refine",
             json={"message": "help", "history": history}
         )
         assert res.status_code == 422
 
     def test_refine_message_too_long_returns_422(self, client):
-        """message exceeding 4000 chars is rejected by Pydantic."""
+        """message exceeding 20000 chars is rejected (max_length=20000, raised from 4000)."""
         res = client.post(
-            "/api/tailor/rec-001/refine",
-            json={"message": "x" * 4001, "history": []}
+            "/api/tailor/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/refine",
+            json={"message": "x" * 20001, "history": []}
         )
         assert res.status_code == 422
 
@@ -432,15 +443,13 @@ class TestRefineEndpoint:
         """Valid history with only user/assistant roles must pass through."""
         db, _ = reset_supabase_mocks
         self._setup_record(db)
-        claude = sys.modules["services.claude"]
-        # Make ai_client.messages.create accessible
         import routes.tailor as tailor_module
         tailor_module.ai_client.messages.create.return_value.content = [
             MagicMock(text="Great resume! What metrics can you add?")
         ]
 
         res = client.post(
-            "/api/tailor/rec-001/refine",
+            "/api/tailor/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/refine",
             json={
                 "message": "Please improve the summary",
                 "history": [
@@ -460,7 +469,7 @@ class TestRefineEndpoint:
         # Must use double-eq chain to match the route's .eq("id").eq("user_id") chain
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
         res = client.post(
-            "/api/tailor/nonexistent-id/refine",
+            "/api/tailor/ffffffff-ffff-ffff-ffff-ffffffffffff/refine",
             json={"message": "help", "history": []}
         )
         assert res.status_code == 404
@@ -627,9 +636,10 @@ class TestGapFillEndpoint:
         assert res.status_code == 422
 
     def test_gap_fill_message_too_long_returns_422(self, client):
+        """message exceeding 20000 chars is rejected (max_length=20000, raised from 4000)."""
         res = client.post(
             "/api/master/gap-fill/chat",
-            json={"message": "x" * 4001, "history": []},
+            json={"message": "x" * 20001, "history": []},
         )
         assert res.status_code == 422
 

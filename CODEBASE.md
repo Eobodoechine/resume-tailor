@@ -126,7 +126,7 @@ This is the most complex file. It handles everything that happens on the Tailor 
 
 - `POST /api/tailor/{record_id}/refine` — The AI coaching chat. Given the tailored resume and conversation history, Claude asks targeted questions to surface better metrics and achievements, then rewrites the resume when the user provides new information. If Claude produces an updated resume in its response (wrapped in `UPDATE_TAILORED_RESUME: ... END_UPDATE` markers), the route saves it to the database automatically.
 
-- `GET /api/tailor/{record_id}/pdf` — Generates and returns a PDF of the tailored resume. Calls the PDF generator service, then sends back the bytes with a `Content-Disposition: attachment` header so the browser downloads it.
+- `GET /api/tailor/{record_id}/pdf` — Generates and returns a PDF of the tailored resume. Parses the saved plain text into `ResumeData` via `resume_parser`, renders it through the `FDEDocxRenderer` (DOCX → LibreOffice → PDF), then sends back the bytes with a `Content-Disposition: attachment` header so the browser downloads it.
 
 #### `routes/profile.py` — User profile
 
@@ -160,17 +160,31 @@ Three functions:
 
 Both tailoring functions use the same prompt via `_build_tailor_prompt()` — this is important because if you update the prompt format (e.g., change the bullet character or section headers), you only need to change one place.
 
-#### `services/pdf_generator.py` — PDF creation
+#### `services/resume_parser.py` — Plain text → ResumeData
 
-Converts the plain-text resume into a formatted PDF. The general process:
+Converts the structured plain-text resume Claude produces into a `ResumeData` TypedDict that any renderer can consume. The parse logic mirrors the format contract enforced by the Claude prompt in `claude.py`:
 
-1. **Parses the text** into sections (SUMMARY, EXPERIENCE, SKILLS, etc.) and within EXPERIENCE, into individual role entries using the `|` pipe separator that Claude was instructed to use.
-2. **Renders an HTML template** (Jinja2) with the parsed data, applying styles.
-3. **Converts HTML → PDF** using WeasyPrint (a Python library that renders HTML/CSS to PDF without a browser).
+- Splits text into named sections (SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS)
+- Parses EXPERIENCE into `ExperienceRole` dicts (`title`, `company`, `dates`, `bullets`)
+- Parses SKILLS lines (`Category: item1, item2`) into `SkillGroup` dicts with `items` as a proper list
+- Parses EDUCATION and CERTIFICATIONS into typed entries
+- Contact fields (`name`, `email`, `phone`, `linkedin`) come from the user's profile, not the text
 
-Why HTML→PDF instead of a PDF library directly? HTML/CSS is much easier to style precisely. WeasyPrint handles page breaks, margins, and font rendering.
+This is the bridge between Claude's text output and the renderer layer.
 
-Note: the PDF template does not use Google Fonts — those require an internet connection during PDF generation, which caused errors in deployment. All fonts are system fonts or embedded.
+#### `backend/renderers/` — Template renderers
+
+Template-agnostic PDF generation system. Each renderer takes a `ResumeData` dict and returns PDF bytes.
+
+- **`renderers/base.py`** — `ResumeData` TypedDict (the shared data contract) and the `Renderer` Protocol every renderer must implement.
+- **`renderers/fde_docx.py`** — The FDE branded renderer. Loads the actual `fde_template.docx` (pixel-perfect two-column format), surgically replaces content by cloning styled paragraph XML nodes via `lxml deepcopy`, then converts to PDF using LibreOffice headless (`libreoffice --headless --convert-to pdf`). This preserves 100% of the visual styling — fonts, colors, spacing, bullet symbols — with zero approximation.
+- **`renderers/registry.py`** — Maps template IDs to renderer classes. `get_renderer("fde_docx")` returns a ready-to-use renderer. Future templates (image overlay, plain DOCX, HTML/CSS) get added here with one line.
+
+Why DOCX→LibreOffice instead of HTML→WeasyPrint? DOCX lets you design the template in Word exactly as it will appear. WeasyPrint approximated styles and could never match the branded layout precisely.
+
+#### `_archive/pdf_generator.py` — **ARCHIVED**
+
+The original WeasyPrint HTML-based PDF renderer. Moved to `backend/_archive/` — no longer called by any route. Superseded by `renderers/fde_docx.py`. Safe to delete permanently once the new renderer is confirmed stable in production.
 
 #### `services/extractor.py` — Text extraction from uploaded files
 
@@ -345,7 +359,12 @@ Backend: Claude reads current resume + JD + conversation → responds with coach
   ↓
 User clicks Download → GET /api/tailor/{id}/pdf
   ↓
-Backend: pdf_generator.generate_pdf(tailored_text, profile) → WeasyPrint renders HTML → PDF bytes
+Backend: resume_parser.text_to_resume_data(tailored_text, profile) → ResumeData TypedDict
+  ↓
+Backend: FDEDocxRenderer.render(data) — loads fde_template.docx, clones styled XML nodes
+         via lxml deepcopy (title, dates, bullets per role; skills, certs, education in sidebar)
+  ↓
+Backend: LibreOffice headless --convert-to pdf → PDF bytes
   ↓
 Browser: downloads PDF file
 ```

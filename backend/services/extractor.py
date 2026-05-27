@@ -34,6 +34,10 @@ def _extract_docx(file_bytes: bytes) -> str:
     tables — extracting only doc.paragraphs would silently drop that
     content. We also pull text from section headers/footers in case the
     candidate put their contact info there.
+
+    Merged table cells in python-docx repeat the same underlying _tc XML
+    element across multiple row.cells entries. We track visited _tc ids to
+    deduplicate merged cells and avoid repeating their text (TD-08).
     """
     doc = docx.Document(io.BytesIO(file_bytes))
     parts: list[str] = []
@@ -43,9 +47,14 @@ def _extract_docx(file_bytes: bytes) -> str:
         if text:
             parts.append(text)
 
+    seen_cell_tcs: set[int] = set()
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
+                tc_id = id(cell._tc)
+                if tc_id in seen_cell_tcs:
+                    continue
+                seen_cell_tcs.add(tc_id)
                 cell_text = cell.text.strip()
                 if cell_text:
                     parts.append(cell_text)

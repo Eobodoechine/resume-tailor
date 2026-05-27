@@ -20,12 +20,13 @@ if isinstance(sys.modules.get("docx"), MagicMock):
 if isinstance(sys.modules.get("docx.api"), MagicMock):
     del sys.modules["docx.api"]
 
-# Stub renderers.base if not real
-if "renderers.base" not in sys.modules or not hasattr(sys.modules["renderers.base"], "ResumeData"):
-    base_stub = types.ModuleType("renderers.base")
-    base_stub.ResumeData = dict
-    base_stub.Renderer = object
-    sys.modules["renderers.base"] = base_stub
+# Ensure real renderers.base is in sys.modules (pure TypedDicts, no heavy deps)
+# A minimal stub would be missing ExperienceRole/SkillGroup/etc and break other test files.
+for _k in list(sys.modules):
+    if _k == "renderers.base" and not hasattr(sys.modules[_k], "ExperienceRole"):
+        del sys.modules[_k]  # evict incomplete stub
+if "renderers.base" not in sys.modules:
+    import renderers.base  # noqa: F401
 
 # Clear cached renderer module so it re-imports with real docx
 for _mod in list(sys.modules):

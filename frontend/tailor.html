@@ -256,6 +256,27 @@
       flex-shrink: 0;
     }
     #btn-refine-send:disabled { opacity: 0.5; cursor: not-allowed; }
+    #btn-refine-upload {
+      height: 38px;
+      width: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f0f4f8;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    #btn-refine-upload:hover { background: #e2e8f0; }
+    #refine-upload-status {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 2px 16px 6px;
+      min-height: 16px;
+    }
 
     /* Typing dots animation */
     .typing-dots span {
@@ -393,7 +414,10 @@
         🤖 AI Resume Coach <span class="live-badge">Live</span>
       </div>
       <div id="refine-messages"></div>
+      <div id="refine-upload-status"></div>
       <div id="refine-input-row">
+        <input type="file" id="refine-file-input" accept=".pdf,.docx" style="display:none" onchange="uploadMasterResume(this)">
+        <button id="btn-refine-upload" title="Upload updated master resume" onclick="document.getElementById('refine-file-input').click()">📎</button>
         <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume…"></textarea>
         <button id="btn-refine-send" onclick="sendRefine()">Send</button>
       </div>
@@ -410,9 +434,11 @@
   let refineHistory   = [];
   let jdMode          = "paste";
 
-  // Configure marked for safe inline rendering
+  // Configure marked for safe inline rendering.
+  // marked.use() is the non-deprecated API in marked v5+; options are set once
+  // globally so marked.parse() calls don't need to repeat them (TD-20).
   if (typeof marked !== "undefined") {
-    marked.setOptions({ breaks: true, gfm: true });
+    marked.use({ breaks: true, gfm: true });
   }
 
   // ── Step indicator ─────────────────────────────────────────────────────────
@@ -561,7 +587,7 @@
 
   function renderMarkdown(text) {
     if (typeof marked !== "undefined") {
-      const raw = marked.parse(text, { breaks: true, gfm: true });
+      const raw = marked.parse(text);  // options already set globally via marked.use()
       // Sanitize with DOMPurify if available, otherwise allow as-is (source is our own Claude API)
       return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
     }
@@ -663,6 +689,41 @@
     notice.textContent = "✓ Resume updated above";
     document.getElementById("refine-messages").appendChild(notice);
     notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function uploadMasterResume(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.getElementById("refine-upload-status");
+    const btn = document.getElementById("btn-refine-upload");
+    btn.disabled = true;
+    status.textContent = `Uploading ${file.name}…`;
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // Upload to the resume files endpoint (same one the dashboard uses)
+      const res = await fetch("/api/resumes/upload", {
+        method: "POST",
+        credentials: "include",
+        body: fd
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Upload failed" }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      status.textContent = `✓ ${file.name} uploaded — synthesizing…`;
+
+      // Auto-synthesize so the coach picks up the new content
+      const synthRes = await apiFetch("/api/master/synthesize", { method: "POST" });
+      status.textContent = "✓ Master resume updated — coach now has the latest version.";
+      setTimeout(() => { status.textContent = ""; }, 5000);
+    } catch (e) {
+      status.textContent = `Upload failed: ${e.message}`;
+    } finally {
+      btn.disabled = false;
+      input.value = "";
+    }
   }
 
   // Enter to send, Shift+Enter for newline

@@ -70,7 +70,11 @@ class TestPromptsPipeFormat:
     """Regression: Claude prompts must enforce | separator for role headers (TD-05)."""
 
     def _assert_pipe_format_in_prompt(self, source: str, filename: str):
-        assert "| " in source and "separator" in source.lower(), (
+        # Verify the prompt template requires the pipe-separated role-header format.
+        # claude.py uses "Job Title | Company Name | Month Year" — check for that.
+        has_pipe = "| " in source
+        has_format_instruction = "Job Title" in source or "pipe" in source.lower()
+        assert has_pipe and has_format_instruction, (
             f"{filename} prompt is missing the pipe-separator format instruction — "
             "check that 'Job Title | Company Name | Start – End' format is required"
         )

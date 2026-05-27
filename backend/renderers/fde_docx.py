@@ -260,8 +260,22 @@ def _rebuild_main(main_cell: Any, data: ResumeData) -> None:
         proto_summary = _clone(summary_paras[0]) if summary_paras else None
         _remove_between(tc, profile_tbl, next_after_profile)
         if proto_summary is not None:
-            _set_text(proto_summary, data.get('summary') or '')
-            _insert_after(tc, profile_tbl, [proto_summary])
+            summary_text = data.get('summary') or ''
+            # Split on newlines so Claude's intentional line-breaks produce
+            # separate styled paragraphs instead of collapsing inside one <w:t>.
+            # Empty lines are skipped; fall back to one empty para so the
+            # PROFILE section is never left structurally empty.
+            lines = [ln.strip() for ln in summary_text.splitlines() if ln.strip()]
+            if not lines:
+                # summary_text was empty or all-whitespace — write one empty para
+                # rather than echoing whitespace into the <w:t> element.
+                lines = [""]
+            new_paras = []
+            for line in lines:
+                p = _clone(proto_summary)
+                _set_text(p, line)
+                new_paras.append(p)
+            _insert_after(tc, profile_tbl, new_paras)
 
     # ── 2. Featured Project ───────────────────────────────────────────────
     fp = data.get('featured_project')

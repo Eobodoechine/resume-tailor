@@ -100,6 +100,22 @@ CREATE POLICY "Public insert access request" ON public.access_requests
   FOR INSERT WITH CHECK (TRUE);
 
 -- ============================================================
+-- Indexes (TD-19)
+-- The paginated history query does ORDER BY + WHERE user_id = $1.
+-- Without indexes these are full-table scans; add them once data grows.
+-- Run these after the schema if they don't already exist.
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_tailored_resumes_user_id
+  ON public.tailored_resumes(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_resume_files_user_id
+  ON public.resume_files(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_master_resumes_user_id
+  ON public.master_resumes(user_id);
+
+-- ============================================================
 -- Storage Buckets
 -- Run these via Supabase dashboard > Storage OR via SQL
 -- ============================================================

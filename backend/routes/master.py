@@ -1,6 +1,9 @@
 """
 Master resume routes: synthesize, get, and update via gap-filling chat.
 """
+import logging
+import time
+import anthropic
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
@@ -9,11 +12,12 @@ from dependencies.auth import require_user, AuthContext
 from services.supabase_client import get_client, get_admin_client
 from services import claude as claude_service
 from limiter import limiter
-import anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from config import CLAUDE_MODEL
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/master", tags=["master"])
-ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+ai_client = claude_service.client  # shared Anthropic client — no duplicate connection pool
 
 
 def _get_profile(db, user_id: str) -> dict:
@@ -90,11 +94,11 @@ class GapHistoryMessage(BaseModel):
     into the conversation array forwarded to Claude.
     """
     role: Literal["user", "assistant"]
-    content: str = Field(..., max_length=4000)
+    content: str = Field(..., max_length=20000)
 
 
 class GapMessage(BaseModel):
-    message: str = Field(..., max_length=4000)
+    message: str = Field(..., max_length=20000)
     history: list[GapHistoryMessage] = Field(default=[], max_length=40)
 
 
@@ -144,15 +148,26 @@ Current master resume:
     trimmed_history = [m.model_dump() for m in body.history[-MAX_HISTORY_TURNS:]]
     messages = trimmed_history + [{"role": "user", "content": body.message}]
 
+    t0 = time.monotonic()
     try:
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2000,
             system=system_prompt,
-            messages=messages
+            messages=messages,
+            timeout=claude_service.API_TIMEOUT,
         )
+    except anthropic.APITimeoutError:
+        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+    logger.info(
+        "claude[gap-fill] user=%s input=%d output=%d ms=%d",
+        str(ctx.user.id)[:8],
+        response.usage.input_tokens,
+        response.usage.output_tokens,
+        int((time.monotonic() - t0) * 1000),
+    )
 
     reply = response.content[0].text
 

@@ -1,3 +1,11 @@
+<!--
+  ARCHIVED — no longer used by any route.
+  Superseded by: backend/templates/fde_template.docx (DOCX template rendered by fde_docx.py)
+  Safe to delete permanently once the FDE renderer is confirmed stable in production.
+
+  Original: WeasyPrint Jinja2 HTML template for two-column PDF rendering.
+  Archived: 2026-05-26
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,7 +29,6 @@
     flex-direction: column;
   }
 
-  /* ── Header ─────────────────────────────────── */
   .header {
     background: #1B2A4A;
     color: white;
@@ -47,13 +54,8 @@
   .contact-row span { white-space: nowrap; }
   .contact-row a { color: #c8d4e8; text-decoration: none; }
 
-  /* ── Two-column body ─────────────────────────── */
-  .body {
-    display: flex;
-    flex: 1;
-  }
+  .body { display: flex; flex: 1; }
 
-  /* LEFT COLUMN */
   .left {
     width: 2.4in;
     background: #F4F6FA;
@@ -61,13 +63,8 @@
     border-right: 1pt solid #dde3ef;
   }
 
-  /* RIGHT COLUMN */
-  .right {
-    flex: 1;
-    padding: 18pt 22pt;
-  }
+  .right { flex: 1; padding: 18pt 22pt; }
 
-  /* ── Section headers ─────────────────────────── */
   .section-title {
     font-size: 7.5pt;
     font-weight: 700;
@@ -82,49 +79,29 @@
 
   .section-title:first-child { margin-top: 0; }
 
-  /* ── Summary ─────────────────────────────────── */
-  /* white-space: pre-line preserves intentional line-breaks Claude puts in summaries (TD-10) */
   .summary { font-size: 9pt; color: #333; line-height: 1.5; margin-bottom: 2pt; white-space: pre-line; }
 
-  /* ── Experience ──────────────────────────────── */
   .role { margin-bottom: 12pt; }
   .role-header { font-weight: 600; font-size: 9pt; color: #1B2A4A; }
   .role-meta { font-size: 8pt; color: #666; margin-bottom: 4pt; }
 
   .role ul { padding-left: 11pt; margin-top: 3pt; }
-  .role ul li {
-    font-size: 8.5pt;
-    margin-bottom: 2.5pt;
-    color: #222;
-    line-height: 1.4;
-  }
+  .role ul li { font-size: 8.5pt; margin-bottom: 2.5pt; color: #222; line-height: 1.4; }
 
-  /* ── Skills ──────────────────────────────────── */
   .skill-row { margin-bottom: 6pt; }
-  .skill-category {
-    font-size: 7.5pt;
-    font-weight: 600;
-    color: #1B2A4A;
-    text-transform: uppercase;
-    letter-spacing: 0.5pt;
-    margin-bottom: 2pt;
-  }
+  .skill-category { font-size: 7.5pt; font-weight: 600; color: #1B2A4A; text-transform: uppercase; letter-spacing: 0.5pt; margin-bottom: 2pt; }
   .skill-items { font-size: 8pt; color: #444; line-height: 1.4; }
 
-  /* ── Education ───────────────────────────────── */
   .edu-entry { font-size: 8.5pt; margin-bottom: 7pt; line-height: 1.4; }
 
-  /* ── Certs / Projects ────────────────────────── */
   .plain-text { font-size: 8.5pt; line-height: 1.5; white-space: pre-line; color: #333; }
 
-  /* ── Page break ──────────────────────────────── */
   @page { margin: 0; size: letter; }
 </style>
 </head>
 <body>
 <div class="page">
 
-  <!-- HEADER -->
   <div class="header">
     <h1>{{ name }}</h1>
     <div class="contact-row">
@@ -136,12 +113,8 @@
     </div>
   </div>
 
-  <!-- BODY: two columns -->
   <div class="body">
-
-    <!-- LEFT COLUMN: Skills, Education, Certs -->
     <div class="left">
-
       {% if skills %}
       <div class="section-title">Skills</div>
       {% for skill in skills %}
@@ -163,12 +136,9 @@
       <div class="section-title">Certifications</div>
       <div class="plain-text">{{ certifications }}</div>
       {% endif %}
-
     </div>
 
-    <!-- RIGHT COLUMN: Summary, Experience, Projects -->
     <div class="right">
-
       {% if summary %}
       <div class="section-title">Summary</div>
       <div class="summary">{{ summary }}</div>
@@ -194,7 +164,6 @@
       <div class="section-title">Projects</div>
       <div class="plain-text">{{ projects }}</div>
       {% endif %}
-
     </div>
   </div>
 </div>

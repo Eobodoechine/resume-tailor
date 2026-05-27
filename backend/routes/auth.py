@@ -1,6 +1,7 @@
 """
 Auth routes: request access, magic link login, session cookie management, logout.
 """
+import os
 from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel, EmailStr
 import httpx
@@ -127,6 +128,19 @@ def create_session(request: Request, body: SessionBody, response: Response):
         max_age=COOKIE_MAX_AGE,
         path="/",
     )
+
+    # Keep profiles.email in sync with auth.users in case the user changed their
+    # email after initial signup — the trigger only fires once at creation (TD-14).
+    # Note: this is a synchronous Supabase call (~50-150 ms) that runs on every
+    # login.  It's non-critical — a failure is swallowed and the session is
+    # still issued — but callers reading profiles.email immediately after login
+    # may briefly see the old value if the write is slow.
+    if email:
+        try:
+            admin.table("profiles").update({"email": email}).eq("id", str(user.id)).execute()
+        except Exception:
+            pass  # Non-fatal — session is still valid; profile syncs on next login
+
     return {"message": "Session created"}
 
 
@@ -140,7 +154,8 @@ def delete_session(response: Response):
     return {"message": "Logged out"}
 
 
-APP_URL = "https://resume-tailor-ogop.onrender.com"
+# Read APP_URL from env so magic-link redirects survive URL changes (TD-13)
+APP_URL = os.getenv("APP_URL", "https://resume-tailor-ogop.onrender.com")
 
 
 def _send_magic_link(admin_client, email: str):
