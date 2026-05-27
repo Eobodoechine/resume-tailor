@@ -111,16 +111,18 @@ async function apiUpload(path, formData) {
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
 //
-// Why HEAD + direct anchor instead of fetch→blob→URL.createObjectURL:
-//   Chrome enforces a ~5-second user-activation window. PDF generation via
-//   LibreOffice on Render's free tier can take 10–30 s, so the activation
-//   expires before a.click() fires. Chrome then ignores a.download and uses
-//   the blob URL's auto-generated UUID as the filename — the bug we saw.
-//   Direct anchor navigation is not subject to the activation window: the
-//   browser sends the session cookie (same-origin) and honours the server's
-//   Content-Disposition: attachment; filename="…" header directly.
+// Why HEAD + hidden iframe instead of fetch→blob or programmatic a.click():
+//   1. fetch→blob: Chrome's user-activation window (~5s) expires during
+//      LibreOffice generation (10-30s), so a.download is ignored and the
+//      blob UUID becomes the filename.
+//   2. programmatic a.click(): Chrome blocks untrusted programmatic navigation
+//      triggers that fire after an awaited async operation.
+//   3. Hidden iframe: the browser navigates the iframe to the URL, sends the
+//      session cookie (same-origin), server returns Content-Disposition:
+//      attachment; filename="…" — browser downloads with that filename.
+//      No user-activation requirement, no blob URL, no blocked navigation.
 async function apiDownload(path, fallbackFilename) {
-  // HEAD request: validate auth + reachability without triggering LibreOffice.
+  // HEAD: fast auth + ownership check — does not trigger LibreOffice.
   const res = await fetch(API + path, { credentials: "include", method: "HEAD" });
   if (res.status === 401) {
     clearToken();
@@ -130,14 +132,15 @@ async function apiDownload(path, fallbackFilename) {
   }
   if (!res.ok) throw new Error("Download failed — please try again.");
 
-  // Trigger the real GET via a direct anchor click — no blob URL, no timing issue.
-  // Content-Disposition: attachment on the server side prevents page navigation.
-  const a    = document.createElement("a");
-  a.href          = API + path;
-  a.style.display = "none";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => document.body.removeChild(a), 100);
+  // Fire the real GET via a hidden iframe.
+  // Content-Disposition: attachment prevents the iframe from navigating visibly;
+  // the browser downloads the file using the server-supplied filename.
+  // Keep the iframe alive for 60s — LibreOffice can take 30s+ on cold start.
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  iframe.src = API + path;
+  document.body.appendChild(iframe);
+  setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); }, 60000);
 }
 
 // ── Alert helper ───────────────────────────────────────────────────────────
