@@ -106,12 +106,22 @@ async function apiUpload(path, formData) {
   return json;
 }
 
-// ── Blob / file download ───────────────────────────────────────────────────
+// ── File download ──────────────────────────────────────────────────────────
 // Shared helper for any endpoint that returns binary content (PDF, etc.).
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
+//
+// Why HEAD + direct anchor instead of fetch→blob→URL.createObjectURL:
+//   Chrome enforces a ~5-second user-activation window. PDF generation via
+//   LibreOffice on Render's free tier can take 10–30 s, so the activation
+//   expires before a.click() fires. Chrome then ignores a.download and uses
+//   the blob URL's auto-generated UUID as the filename — the bug we saw.
+//   Direct anchor navigation is not subject to the activation window: the
+//   browser sends the session cookie (same-origin) and honours the server's
+//   Content-Disposition: attachment; filename="…" header directly.
 async function apiDownload(path, fallbackFilename) {
-  const res = await fetch(API + path, { credentials: "include" });
+  // HEAD request: validate auth + reachability without triggering LibreOffice.
+  const res = await fetch(API + path, { credentials: "include", method: "HEAD" });
   if (res.status === 401) {
     clearToken();
     fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
@@ -120,24 +130,14 @@ async function apiDownload(path, fallbackFilename) {
   }
   if (!res.ok) throw new Error("Download failed — please try again.");
 
-  // Prefer the server-supplied filename from Content-Disposition header.
-  // The backend returns e.g. filename="TribeAI_AIWorkflowStrategist.pdf".
-  const cd = res.headers.get("Content-Disposition");
-  const serverFilename = cd?.match(/filename="([^"]+)"/)?.[1];
-  const filename = serverFilename || fallbackFilename;
-
-  const blob = await res.blob();
-  const url  = URL.createObjectURL(blob);
+  // Trigger the real GET via a direct anchor click — no blob URL, no timing issue.
+  // Content-Disposition: attachment on the server side prevents page navigation.
   const a    = document.createElement("a");
-  a.href          = url;
-  a.download      = filename;
+  a.href          = API + path;
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 1500);
+  setTimeout(() => document.body.removeChild(a), 100);
 }
 
 // ── Alert helper ───────────────────────────────────────────────────────────
