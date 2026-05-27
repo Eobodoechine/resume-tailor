@@ -73,7 +73,7 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=9"></script>
 <script>
   requireAuth();
 
@@ -95,22 +95,57 @@
         return;
       }
 
-      tbody.innerHTML = data.map(r => `
-        <tr>
-          <td style="font-weight:500">${r.full_name || "—"}</td>
-          <td>${r.email}</td>
-          <td style="color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.reason || "—"}</td>
-          <td style="color:var(--muted)">${fmtDate(r.requested_at)}</td>
-          <td><span class="badge badge-${r.status}">${r.status}</span></td>
-          <td style="text-align:right;white-space:nowrap;">
-            ${r.status === "pending" ? `
-              <button class="btn btn-success" style="font-size:12px;padding:5px 10px;margin-right:6px"
-                onclick="approve('${r.id}')">Approve</button>
-              <button class="btn btn-danger" style="font-size:12px;padding:5px 10px"
-                onclick="reject('${r.id}')">Reject</button>
-            ` : "—"}
-          </td>
-        </tr>`).join("");
+      tbody.innerHTML = "";
+      data.forEach(r => {
+        const tr = document.createElement("tr");
+
+        const tdName = document.createElement("td");
+        tdName.style.fontWeight = "500";
+        tdName.textContent = r.full_name || "—";
+
+        const tdEmail = document.createElement("td");
+        tdEmail.textContent = r.email;
+
+        const tdReason = document.createElement("td");
+        tdReason.style.cssText = "color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis";
+        tdReason.textContent = r.reason || "—";
+
+        const tdDate = document.createElement("td");
+        tdDate.style.color = "var(--muted)";
+        tdDate.textContent = fmtDate(r.requested_at);
+
+        const tdStatus = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = `badge badge-${r.status}`;
+        badge.textContent = r.status;
+        tdStatus.appendChild(badge);
+
+        const tdActions = document.createElement("td");
+        tdActions.style.cssText = "text-align:right;white-space:nowrap;";
+        if (r.status === "pending") {
+          const btnApprove = document.createElement("button");
+          btnApprove.className = "btn btn-success";
+          btnApprove.style.cssText = "font-size:12px;padding:5px 10px;margin-right:6px";
+          btnApprove.textContent = "Approve";
+          btnApprove.dataset.id = r.id;
+          btnApprove.addEventListener("click", () => approve(r.id));
+
+          const btnReject = document.createElement("button");
+          btnReject.className = "btn btn-danger";
+          btnReject.style.cssText = "font-size:12px;padding:5px 10px";
+          btnReject.textContent = "Reject";
+          btnReject.dataset.id = r.id;
+          btnReject.addEventListener("click", () => reject(r.id));
+
+          tdActions.appendChild(btnApprove);
+          tdActions.appendChild(btnReject);
+        } else {
+          tdActions.textContent = "—";
+        }
+
+        tr.append(tdName, tdEmail, tdReason, tdDate, tdStatus, tdActions);
+        tbody.appendChild(tr);
+      });
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
@@ -147,18 +182,31 @@
         tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;">No users yet</td></tr>`;
         return;
       }
-      tbody.innerHTML = users.map(u => `
-        <tr>
-          <td style="font-weight:500">${u.full_name || "—"}</td>
-          <td>${u.email}</td>
-          <td style="color:var(--muted)">${fmtDate(u.created_at)}</td>
-        </tr>`).join("");
+      tbody.innerHTML = "";
+      users.forEach(u => {
+        const tr = document.createElement("tr");
+        const tdName = document.createElement("td");
+        tdName.style.fontWeight = "500";
+        tdName.textContent = u.full_name || "—";
+        const tdEmail = document.createElement("td");
+        tdEmail.textContent = u.email;
+        const tdDate = document.createElement("td");
+        tdDate.style.color = "var(--muted)";
+        tdDate.textContent = fmtDate(u.created_at);
+        tr.append(tdName, tdEmail, tdDate);
+        tbody.appendChild(tr);
+      });
     } catch (e) {
       if (e && e.redirecting) return;
-      document.getElementById("users-body").innerHTML =
-        `<tr><td colspan="3" style="text-align:center;color:var(--error);padding:20px;">
-           Failed to load users: ${e.message}
-         </td></tr>`;
+      const errTbody = document.getElementById("users-body");
+      errTbody.innerHTML = "";
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.style.cssText = "text-align:center;color:var(--error);padding:20px;";
+      td.textContent = `Failed to load users: ${e.message}`;
+      tr.appendChild(td);
+      errTbody.appendChild(tr);
     }
   }
 

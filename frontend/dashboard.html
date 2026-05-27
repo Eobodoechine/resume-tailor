@@ -88,7 +88,7 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=9"></script>
 <script>
   // If a magic link token is in the URL hash, app.js is mid-exchange —
   // the cookie isn't set yet so every API call would 401. Do nothing here;
@@ -120,17 +120,32 @@
       document.getElementById("stat-files").textContent    = files.length;
       document.getElementById("stat-tailored").textContent = history.total ?? 0;
 
-      // Master resume status
+      // Master resume status — built with DOM to prevent XSS on master.content
       const masterEl = document.getElementById("master-status");
+      masterEl.innerHTML = "";
       if (master.content) {
-        masterEl.innerHTML = `
-          <div class="alert alert-success">Master resume is up to date — last updated ${fmtDate(master.last_updated)}</div>
-          <details style="margin-top:8px;">
-            <summary style="cursor:pointer;font-size:13px;color:var(--blue)">Preview first 400 characters</summary>
-            <pre style="font-size:12px;color:var(--muted);white-space:pre-wrap;margin-top:8px;">${master.content.slice(0,400)}...</pre>
-          </details>`;
+        const alertDiv = document.createElement("div");
+        alertDiv.className = "alert alert-success";
+        alertDiv.textContent = `Master resume is up to date — last updated ${fmtDate(master.last_updated)}`;
+
+        const details = document.createElement("details");
+        details.style.marginTop = "8px";
+        const summary = document.createElement("summary");
+        summary.style.cssText = "cursor:pointer;font-size:13px;color:var(--blue)";
+        summary.textContent = "Preview first 400 characters";
+        const pre = document.createElement("pre");
+        pre.style.cssText = "font-size:12px;color:var(--muted);white-space:pre-wrap;margin-top:8px;";
+        pre.textContent = master.content.slice(0, 400) + "...";
+        details.appendChild(summary);
+        details.appendChild(pre);
+
+        masterEl.appendChild(alertDiv);
+        masterEl.appendChild(details);
       } else {
-        masterEl.innerHTML = `<div class="alert alert-info">No master resume yet. Upload at least one resume file and click "Re-Synthesize Master Resume".</div>`;
+        const div = document.createElement("div");
+        div.className = "alert alert-info";
+        div.textContent = 'No master resume yet. Upload at least one resume file and click "Re-Synthesize Master Resume".';
+        masterEl.appendChild(div);
       }
 
       // File list
@@ -147,14 +162,30 @@
       ul.innerHTML = `<li style="color:var(--muted);font-size:14px;justify-content:center">No files uploaded yet</li>`;
       return;
     }
-    ul.innerHTML = files.map(f => `
-      <li>
-        <div>
-          <div class="file-name">${f.filename}</div>
-          <div class="file-meta">${f.file_type?.toUpperCase()} · Uploaded ${fmtDate(f.uploaded_at)}</div>
-        </div>
-        <button class="btn btn-outline" style="font-size:12px;padding:5px 10px" onclick="deleteFile('${f.id}')">Remove</button>
-      </li>`).join("");
+    ul.innerHTML = "";
+    files.forEach(f => {
+      const li = document.createElement("li");
+
+      const info = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "file-name";
+      name.textContent = f.filename;
+      const meta = document.createElement("div");
+      meta.className = "file-meta";
+      meta.textContent = `${(f.file_type || "").toUpperCase()} · Uploaded ${fmtDate(f.uploaded_at)}`;
+      info.appendChild(name);
+      info.appendChild(meta);
+
+      const btn = document.createElement("button");
+      btn.className = "btn btn-outline";
+      btn.style.cssText = "font-size:12px;padding:5px 10px";
+      btn.textContent = "Remove";
+      btn.addEventListener("click", () => deleteFile(f.id));
+
+      li.appendChild(info);
+      li.appendChild(btn);
+      ul.appendChild(li);
+    });
   }
 
   async function deleteFile(id) {
@@ -199,27 +230,24 @@
     loadDashboard();
   }
 
-  function appendProgress(html) {
-    const prog = document.getElementById("upload-progress");
-    const wrap = document.createElement("div");
-    wrap.innerHTML = html;
-    prog.appendChild(wrap);
-  }
-
   async function uploadFile(file) {
     // Show one row per file and update it in place so a batch upload doesn't
     // collapse to just the last file's status.
-    const row = document.createElement("div");
-    row.innerHTML = `<div class="alert alert-info">Uploading ${file.name}…</div>`;
-    document.getElementById("upload-progress").appendChild(row);
+    // Built with DOM (not innerHTML) so a malicious filename can't inject script.
+    const alertDiv = document.createElement("div");
+    alertDiv.className = "alert alert-info";
+    alertDiv.textContent = `Uploading ${file.name}…`;
+    document.getElementById("upload-progress").appendChild(alertDiv);
     try {
       const fd = new FormData();
       fd.append("file", file);
       await apiUpload("/api/resumes/upload", fd);
-      row.innerHTML = `<div class="alert alert-success">✓ ${file.name} uploaded</div>`;
+      alertDiv.className = "alert alert-success";
+      alertDiv.textContent = `✓ ${file.name} uploaded`;
     } catch (e) {
       if (e && e.redirecting) return;
-      row.innerHTML = `<div class="alert alert-error">Failed to upload ${file.name}: ${e.message}</div>`;
+      alertDiv.className = "alert alert-error";
+      alertDiv.textContent = `Failed to upload ${file.name}: ${e.message}`;
     }
   }
 

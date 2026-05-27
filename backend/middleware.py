@@ -7,7 +7,6 @@ SlidingSessionMiddleware    — refreshes the session cookie max_age on every
                               window slides forward from last activity rather
                               than expiring a fixed time after login.
 """
-import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -15,21 +14,10 @@ from starlette.responses import Response
 from dependencies.auth import COOKIE_NAME
 from config import COOKIE_SECURE, COOKIE_MAX_AGE
 
-logger = logging.getLogger(__name__)
-
-def _log_headers(label: str, path: str, headers):
-    """Log all headers for a request/response on PDF endpoints."""
-    if "/pdf" in path:
-        cd = headers.get("content-disposition", "(absent)")
-        ct = headers.get("content-type", "(absent)")
-        logger.info(f"[middleware] {label}  path={path}  Content-Disposition={cd!r}  Content-Type={ct!r}")
-
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        _log_headers("BEFORE SecurityHeaders", request.url.path, request.headers)
         response: Response = await call_next(request)
-        _log_headers("AFTER  call_next (before SecurityHeaders adds)", request.url.path, response.headers)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             # 'unsafe-inline' required: every page has inline onclick= handlers
@@ -48,14 +36,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["Referrer-Policy"]        = "strict-origin-when-cross-origin"
-        _log_headers("AFTER  SecurityHeaders adds", request.url.path, response.headers)
         return response
 
 
 class SlidingSessionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
-        _log_headers("AFTER  SlidingSession call_next", request.url.path, response.headers)
 
         # CRITICAL: skip auth routes entirely. They own the cookie:
         #   - DELETE /api/auth/session writes Max-Age=0 to clear it.
@@ -96,5 +82,4 @@ class SlidingSessionMiddleware(BaseHTTPMiddleware):
             max_age=COOKIE_MAX_AGE,
             path="/",
         )
-        _log_headers("AFTER  SlidingSession set_cookie", request.url.path, response.headers)
         return response
