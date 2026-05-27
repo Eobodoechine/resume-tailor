@@ -111,18 +111,34 @@ async function apiUpload(path, formData) {
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
 //
-// Why HEAD + hidden iframe instead of fetch→blob or programmatic a.click():
-//   1. fetch→blob: Chrome's user-activation window (~5s) expires during
-//      LibreOffice generation (10-30s), so a.download is ignored and the
-//      blob UUID becomes the filename.
-//   2. programmatic a.click(): Chrome blocks untrusted programmatic navigation
-//      triggers that fire after an awaited async operation.
-//   3. Hidden iframe: the browser navigates the iframe to the URL, sends the
-//      session cookie (same-origin), server returns Content-Disposition:
-//      attachment; filename="…" — browser downloads with that filename.
-//      No user-activation requirement, no blob URL, no blocked navigation.
+// Root cause of the UUID-filename bug:
+//   Chrome's transient user-activation window is ~5 s from the last click.
+//   Any `await` suspends the JS call stack. If the download trigger fires
+//   after an await, Chrome treats it as an untrusted (non-user) action:
+//     - blob URL + a.download → UUID blob filename (original bug)
+//     - a.click() after await → silent no-op or UUID filename (Fix #1 bug)
+//     - iframe.src after await → blocked by X-Frame-Options: DENY (Fix #2 bug)
+//
+// The fix: click the anchor SYNCHRONOUSLY before any await.
+//   - Same-origin URL → session cookie sent automatically (no auth header needed)
+//   - download="" attribute → Chrome must download (not display PDF inline)
+//   - Content-Disposition: attachment; filename="…" on server response takes
+//     priority over the download attribute value → correct filename
+//   - HEAD runs AFTER the click, still validates auth + record ownership;
+//     if it fails, the in-flight download also fails and we surface the error.
+// VERSION: 4
 async function apiDownload(path, fallbackFilename) {
-  // HEAD: fast auth + ownership check — does not trigger LibreOffice.
+  // ── 1. Fire download NOW — synchronously, within the user-activation window ──
+  const a = document.createElement("a");
+  a.href = API + path;
+  a.setAttribute("download", "");  // force download; Content-Disposition drives filename
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 100);
+
+  // ── 2. HEAD: auth + record check (fast, no LibreOffice) ──────────────────
+  // Runs after the click so its latency never affects the activation window.
   const res = await fetch(API + path, { credentials: "include", method: "HEAD" });
   if (res.status === 401) {
     clearToken();
@@ -131,16 +147,6 @@ async function apiDownload(path, fallbackFilename) {
     throw new RedirectingError();
   }
   if (!res.ok) throw new Error("Download failed — please try again.");
-
-  // Fire the real GET via a hidden iframe.
-  // Content-Disposition: attachment prevents the iframe from navigating visibly;
-  // the browser downloads the file using the server-supplied filename.
-  // Keep the iframe alive for 60s — LibreOffice can take 30s+ on cold start.
-  const iframe = document.createElement("iframe");
-  iframe.style.display = "none";
-  iframe.src = API + path;
-  document.body.appendChild(iframe);
-  setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); }, 60000);
 }
 
 // ── Alert helper ───────────────────────────────────────────────────────────
