@@ -111,27 +111,33 @@ async function apiUpload(path, formData) {
 // Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
 // callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
 //
-// Root cause of the UUID-filename bug:
-//   Chrome's transient user-activation window is ~5 s from the last click.
-//   Any `await` suspends the JS call stack. If the download trigger fires
-//   after an await, Chrome treats it as an untrusted (non-user) action:
-//     - blob URL + a.download → UUID blob filename (original bug)
-//     - a.click() after await → silent no-op or UUID filename (Fix #1 bug)
-//     - iframe.src after await → blocked by X-Frame-Options: DENY (Fix #2 bug)
+// Root cause of the UUID-filename bug (history):
+//   The URL /api/tailor/{UUID}/pdf has no meaningful filename segment.
+//   When Chrome can't extract a filename from Content-Disposition (stripped by
+//   BaseHTTPMiddleware in the middleware stack), it falls back to URL-path naming:
+//   "pdf" has no extension → Chrome walks up to the UUID segment → UUID filename.
 //
-// The fix: click the anchor SYNCHRONOUSLY before any await.
-//   - Same-origin URL → session cookie sent automatically (no auth header needed)
-//   - download="" attribute → Chrome must download (not display PDF inline)
-//   - Content-Disposition: attachment; filename="…" on server response takes
-//     priority over the download attribute value → correct filename
-//   - HEAD runs AFTER the click, still validates auth + record ownership;
-//     if it fails, the in-flight download also fails and we surface the error.
-// VERSION: 4
-async function apiDownload(path, fallbackFilename) {
+// The fix (VERSION 6):
+//   Set a.download = suggestedFilename (non-empty string).
+//   - Chrome uses the download attribute as the filename when Content-Disposition
+//     is absent or malformed — completely bypasses the middleware interference.
+//   - Non-empty value: Chrome downloads with that exact name.
+//   - Empty string: Chrome falls back to URL-path naming (the bug).
+//   - Only works for same-origin URLs — all our download URLs are same-origin. ✓
+//   - Click fires BEFORE any await, within Chrome's ~5s user-activation window.
+//   - HEAD validates auth AFTER the click; does not block the download trigger.
+// VERSION: 6
+async function apiDownload(path, suggestedFilename) {
   // ── 1. Fire download NOW — synchronously, within the user-activation window ──
   const a = document.createElement("a");
   a.href = API + path;
-  a.setAttribute("download", "");  // force download; Content-Disposition drives filename
+  // Set a non-empty download attribute so Chrome uses it as the filename directly.
+  // This bypasses Content-Disposition header issues caused by BaseHTTPMiddleware.
+  // IMPORTANT: never set a.download = "" (empty string) — Chrome treats that as
+  // "derive filename from URL path", which produces UUID filenames for our routes.
+  if (suggestedFilename) {
+    a.download = suggestedFilename;
+  }
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();

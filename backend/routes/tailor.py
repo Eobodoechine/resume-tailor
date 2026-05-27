@@ -562,7 +562,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
     }
 
 
-@router.api_route("/{record_id}/pdf", methods=["GET", "HEAD"])
+@router.get("/{record_id}/pdf")
 @limiter.limit("20/minute")
 def download_pdf(
     request: Request,
@@ -570,11 +570,6 @@ def download_pdf(
     ctx: AuthContext = Depends(require_user),
 ):
     """Generate and return a PDF for a tailored resume record.
-
-    Accepts both GET and HEAD.  The frontend sends HEAD first to validate auth
-    and reachability without triggering LibreOffice, then fires a direct anchor
-    click for the real GET.  This avoids Chrome's ~5-second user-activation
-    window that caused blob-URL downloads to save with UUID filenames.
 
     Renders via the FDE DOCX renderer (LibreOffice headless → PDF).
     Rate-limited because LibreOffice is CPU-heavy and a single user could
@@ -592,20 +587,6 @@ def download_pdf(
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-
-    company = _safe_filename_part(record.get("company", ""), "tailored")
-    role = _safe_filename_part(record.get("job_title", ""), "resume")
-    filename = f"{company}_{role}.pdf"
-    disposition = f"attachment; filename=\"{filename}\""
-
-    # HEAD: validate ownership + return headers only — skip LibreOffice.
-    if request.method == "HEAD":
-        return Response(
-            content=b"",
-            media_type="application/pdf",
-            headers={"Content-Disposition": disposition},
-        )
-
     profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
@@ -615,8 +596,12 @@ def download_pdf(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
+    company = _safe_filename_part(record.get("company", ""), "resume")
+    role = _safe_filename_part(record.get("job_title", ""), "role")
+    filename = f"{company}_{role}.pdf"
+
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": disposition},
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
     )
