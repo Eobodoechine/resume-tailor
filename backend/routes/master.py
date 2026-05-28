@@ -116,12 +116,18 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
     # Upsert master resume — single round trip, no TOCTOU race if two requests
     # hit synthesize concurrently (both would have hit the empty-branch and tried
     # to insert, with one failing on the unique constraint).
-    admin.table("master_resumes").upsert({
-        "user_id":      str(ctx.user.id),
-        "content":      master_content,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }, on_conflict="user_id").execute()
-    logger.info("[synthesize] master resume upserted  user=%s  chars=%d", ctx.user.id, len(master_content))
+    logger.info("[synthesize] upserting to DB  user=%s  chars=%d", ctx.user.id, len(master_content))
+    try:
+        upsert_result = admin.table("master_resumes").upsert({
+            "user_id":      str(ctx.user.id),
+            "content":      master_content,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="user_id").execute()
+        rows_affected = len(upsert_result.data) if upsert_result.data else 0
+        logger.info("[synthesize] DB upsert OK  user=%s  rows=%d", ctx.user.id, rows_affected)
+    except Exception as e:
+        logger.error("[synthesize] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e)
+        raise HTTPException(status_code=500, detail="Failed to save master resume. Please try again.")
 
     logger.info("[synthesize] COMPLETE  user=%s", ctx.user.id)
     return {"message": "Master resume synthesized", "preview": master_content[:500] + "..."}
@@ -223,28 +229,63 @@ Current master resume:
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
     reply = response.content[0].text
+    # Log whether output was truncated — if output_tokens == max_tokens the reply
+    # was cut mid-sentence and the END_UPDATE marker may be missing
+    if response.usage.output_tokens >= 4000:
+        logger.warning(
+            "[gap-fill] output hit max_tokens — reply likely truncated  "
+            "user=%s  output_tokens=%d  reply_chars=%d  reply_tail=%r",
+            ctx.user.id, response.usage.output_tokens, len(reply), reply[-100:],
+        )
 
     # Check if Claude included a master resume update
     updated_master = None
     update_start = reply.find("UPDATE_MASTER_RESUME:")
     update_end = reply.find("END_UPDATE")
+    logger.info(
+        "[gap-fill] UPDATE block scan  user=%s  reply_chars=%d  "
+        "UPDATE_MASTER_RESUME_pos=%d  END_UPDATE_pos=%d",
+        ctx.user.id, len(reply), update_start, update_end,
+    )
     if update_start != -1 and update_end != -1 and update_end > update_start:
         content_start = update_start + len("UPDATE_MASTER_RESUME:")
         updated_master = reply[content_start:update_end].strip()
+        logger.info(
+            "[gap-fill] UPDATE block found  user=%s  updated_chars=%d",
+            ctx.user.id, len(updated_master),
+        )
 
-        # Save updated master — single upsert avoids TOCTOU race and extra round trip
-        admin.table("master_resumes").upsert({
-            "user_id":      str(ctx.user.id),
-            "content":      updated_master,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
-        }, on_conflict="user_id").execute()
+        # Save updated master — single upsert avoids TOCTOU race
+        try:
+            upsert_result = admin.table("master_resumes").upsert({
+                "user_id":      str(ctx.user.id),
+                "content":      updated_master,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="user_id").execute()
+            rows = len(upsert_result.data) if upsert_result.data else 0
+            logger.info("[gap-fill] DB upsert OK  user=%s  rows=%d", ctx.user.id, rows)
+        except Exception as e:
+            logger.error("[gap-fill] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e)
+            # Don't 500 — the reply is still useful even if the save failed
 
         # Strip the update block from the visible reply
         visible_reply = reply[:update_start].strip()
-        logger.info("[gap-fill] master resume updated  user=%s  updated_chars=%d", ctx.user.id, len(updated_master))
     else:
         visible_reply = reply
-        logger.debug("[gap-fill] no UPDATE block — master unchanged  user=%s", ctx.user.id)
+        if update_start == -1:
+            logger.debug("[gap-fill] no UPDATE_MASTER_RESUME marker in reply  user=%s", ctx.user.id)
+        elif update_end == -1:
+            logger.warning(
+                "[gap-fill] UPDATE_MASTER_RESUME found but END_UPDATE missing — "
+                "likely truncated  user=%s  update_start=%d  reply_chars=%d",
+                ctx.user.id, update_start, len(reply),
+            )
+        elif update_end <= update_start:
+            logger.warning(
+                "[gap-fill] END_UPDATE appears BEFORE UPDATE_MASTER_RESUME — "
+                "marker order wrong  user=%s  update_start=%d  update_end=%d",
+                ctx.user.id, update_start, update_end,
+            )
 
     logger.info("[gap-fill] COMPLETE  user=%s  reply_chars=%d  master_updated=%s",
                 ctx.user.id, len(visible_reply), updated_master is not None)

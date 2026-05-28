@@ -15,7 +15,7 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 async_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 API_TIMEOUT        = 60.0          # seconds — raises anthropic.APITimeoutError on breach (TD-01)
-MAX_SYNTHESIS_CHARS = 150_000       # ~37k tokens — leaves room for prompt + output (TD-02)
+MAX_SYNTHESIS_CHARS = 400_000       # ~100k tokens — safe for Claude's 200k context window (TD-02)
 
 
 def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
@@ -23,23 +23,61 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     Given a list of raw resume texts and the user's profile info,
     produce a single comprehensive master resume in structured text format.
     """
-    # Cap total input to prevent context overflow (TD-02)
+    # Cap total input to prevent context overflow (TD-02).
+    # We use `continue` (not `break`) so one oversized file doesn't block
+    # smaller files that appear later in the list.  Each oversized file is
+    # hard-truncated and included rather than silently dropped, which is
+    # always better than losing data entirely.
+    logger.info(
+        "synthesize: START  total_files=%d  budget=%d  file_sizes=%s",
+        len(resume_texts), MAX_SYNTHESIS_CHARS,
+        [len(t) for t in resume_texts],   # every file size up front — easiest way to spot the big one
+    )
     running = 0
     capped: list[str] = []
-    for t in resume_texts:
-        if running + len(t) > MAX_SYNTHESIS_CHARS:
-            logger.warning(
-                "synthesize: capped at %d/%d files (%d chars) — "
-                "remaining files omitted to stay within context limit",
-                len(capped), len(resume_texts), running,
-            )
-            break
+    skipped = 0
+    for i, t in enumerate(resume_texts):
+        file_num = i + 1
+        file_chars = len(t)
+        if running + file_chars > MAX_SYNTHESIS_CHARS:
+            remaining = MAX_SYNTHESIS_CHARS - running
+            if remaining > 500:
+                capped.append(t[:remaining])
+                running = MAX_SYNTHESIS_CHARS
+                logger.warning(
+                    "synthesize: file %d/%d TRUNCATED  file_chars=%d  truncated_to=%d  running=%d",
+                    file_num, len(resume_texts), file_chars, remaining, running,
+                )
+            else:
+                skipped += 1
+                logger.warning(
+                    "synthesize: file %d/%d SKIPPED  file_chars=%d  remaining_budget=%d",
+                    file_num, len(resume_texts), file_chars, remaining,
+                )
+            continue
         capped.append(t)
-        running += len(t)
-    if not capped:               # single file exceeds limit — truncate it hard
+        running += file_chars
+        logger.info(
+            "synthesize: file %d/%d INCLUDED  file_chars=%d  running=%d",
+            file_num, len(resume_texts), file_chars, running,
+        )
+    if skipped:
+        logger.warning(
+            "synthesize: %d/%d file(s) skipped — MAX_SYNTHESIS_CHARS=%d",
+            skipped, len(resume_texts), MAX_SYNTHESIS_CHARS,
+        )
+    if not capped:
+        logger.error(
+            "synthesize: ALL files exceeded budget — hard-truncating first file  file_chars=%d",
+            len(resume_texts[0]),
+        )
         capped = [resume_texts[0][:MAX_SYNTHESIS_CHARS]]
 
     combined = "\n\n---RESUME FILE---\n\n".join(capped)
+    logger.info(
+        "synthesize: cap phase COMPLETE  files_included=%d/%d  combined_chars=%d",
+        len(capped), len(resume_texts), len(combined),
+    )
     name = profile.get("full_name", "")
     contact_block = _build_contact_block(profile)
 
