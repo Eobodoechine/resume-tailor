@@ -201,7 +201,7 @@ Current master resume:
     try:
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=2000,
+            max_tokens=4000,  # raised from 2000 — full master resume in UPDATE block can exceed 1500 tokens
             system=system_prompt,
             messages=messages,
             timeout=claude_service.API_TIMEOUT,
