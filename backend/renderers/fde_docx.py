@@ -115,6 +115,25 @@ def _set_dual_text(para_el: Any, bold_text: str,
             parent.remove(run1)
 
 
+def _add_keep_next(para_el: Any) -> None:
+    """
+    Inject <w:keepNext/> into a paragraph's <w:pPr> so it never strands
+    at the bottom of a page (page-break orphan prevention).
+    Creates <w:pPr> if it doesn't exist.
+
+    OOXML requires <w:pPr> to be the first child of <w:p>.  We create it
+    with etree.Element (not SubElement) so it is detached, then insert it
+    at position 0 before anything else is added to it.
+    """
+    from lxml import etree
+    pPr = para_el.find(_tag('pPr'))
+    if pPr is None:
+        pPr = etree.Element(_tag('pPr'))   # detached — not yet a child
+        para_el.insert(0, pPr)             # insert at position 0 first
+    if pPr.find(_tag('keepNext')) is None:
+        pPr.append(etree.Element(_tag('keepNext')))
+
+
 def _set_bullet_text(para_el: Any, text: str) -> None:
     """
     Set content in a 2-run bullet paragraph.
@@ -336,12 +355,14 @@ def _rebuild_main(main_cell: Any, data: ResumeData) -> None:
                 _set_dual_text(new_hdr,
                                role.get('title') or '',
                                company_loc or None)
+                _add_keep_next(new_hdr)   # prevent orphan heading at page break
                 new_els.append(new_hdr)
 
             # Date line (italic teal)
             if proto_date is not None:
                 new_date = _clone(proto_date)
                 _set_text(new_date, role.get('dates') or '')
+                _add_keep_next(new_date)  # keep date line with first bullet
                 new_els.append(new_date)
 
             # Bullets — clone one node per bullet item
@@ -498,7 +519,13 @@ def _docx_to_pdf(docx_bytes: bytes) -> bytes:
         with open(docx_path, 'wb') as fh:
             fh.write(docx_bytes)
 
-        env = {**os.environ, 'HOME': '/tmp'}
+        # Pass a minimal environment to LibreOffice — avoids leaking secrets
+        # (ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY, etc.) to the subprocess.
+        env = {
+            'HOME': '/tmp',
+            'PATH': os.environ.get('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'),
+            'TMPDIR': '/tmp',
+        }
         result = subprocess.run(
             ['libreoffice', '--headless', '--convert-to', 'pdf',
              '--outdir', tmp, docx_path],

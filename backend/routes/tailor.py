@@ -5,16 +5,11 @@ Also supports: fetching a JD from a URL, and inline refinement chat on a tailore
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 import json as _json
-import logging
-import traceback
-
-logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 import asyncio
 import re
 import json
-import time
 import ipaddress
 import socket
 import uuid
@@ -37,18 +32,9 @@ MAX_JD_LENGTH = 12_000   # ~3,000 tokens
 MAX_HISTORY_TURNS = 20
 _API_TIMEOUT = claude_service.API_TIMEOUT
 
-# Limit concurrent LibreOffice processes to 1.
-# LibreOffice is CPU-heavy; on Render's free tier (single vCPU, ~512 MB RAM)
-# two simultaneous conversions cause OOM. The Semaphore ensures only one
-# PDF render runs at a time — others wait in the async queue rather than
-# spawning a second LibreOffice process.
-_pdf_semaphore = asyncio.Semaphore(1)
-
 
 def _safe_filename_part(value: str, fallback: str) -> str:
-    # Use `[ ]` (literal space) not `\s` — \s matches tabs/newlines which
-    # would survive the strip() and appear in filenames.
-    sanitized = re.sub(r"[^\w \-]", "", value or "").strip().replace(" ", "_")
+    sanitized = re.sub(r"[^\w\s\-]", "", value or "").strip().replace(" ", "_")
     return sanitized[:80] or fallback
 
 
@@ -180,25 +166,19 @@ class RefineMessage(BaseModel):
 @limiter.limit("10/minute")
 def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depends(require_user)):
     """Tailor the master resume to a JD. Saves to history."""
-    logger.info("[tailor] START  user=%s  company=%r  job_title=%r  jd_len=%d  max_roles=%d",
-                ctx.user.id, body.company, body.job_title, len(body.job_description), body.max_roles)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
     master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     if not master_result.data or not master_result.data[0]["content"]:
-        logger.warning("[tailor] 400 no master resume  user=%s", ctx.user.id)
         raise HTTPException(status_code=400, detail="No master resume found. Upload files and synthesize first.")
 
     master_content = master_result.data[0]["content"]
-    logger.debug("[tailor] master resume loaded  user=%s  chars=%d", ctx.user.id, len(master_content))
 
     profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
-    logger.info("[tailor] calling Claude  user=%s", ctx.user.id)
     try:
-        t0 = time.monotonic()
         tailored_text = claude_service.tailor_resume(
             master_resume=master_content,
             job_description=body.job_description,
@@ -207,16 +187,13 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
             company=body.company or "",
             max_roles=body.max_roles,
         )
-        ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[tailor] Claude OK  user=%s  output_chars=%d  ms=%d", ctx.user.id, len(tailored_text), ms)
     except anthropic.APITimeoutError:
-        logger.error("[tailor] 504 Claude timeout  user=%s  company=%r  job_title=%r", ctx.user.id, body.company, body.job_title)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[tailor] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
     # Use admin client for the insert — RLS insert policy may require service role
+    # depending on how the profiles table policy is configured.
     insert_result = admin.table("tailored_resumes").insert({
         "user_id": str(ctx.user.id),
         "job_title": body.job_title,
@@ -226,8 +203,6 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
     }).execute()
 
     record_id = insert_result.data[0]["id"] if insert_result.data else None
-    logger.info("[tailor] COMPLETE  user=%s  record_id=%s  company=%r  job_title=%r",
-                ctx.user.id, record_id, body.company, body.job_title)
 
     return {
         "id": record_id,
@@ -279,12 +254,10 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
     3. Fall back to full HTML stripping (works for Indeed, company career pages).
     4. Raise a clear, actionable error if content is still too short.
     """
-    logger.info("[fetch-jd] START  user=%s  url=%r", ctx.user.id, body.url)
     # _validate_fetch_url calls socket.gethostbyname() which is a blocking DNS
     # lookup. Run it in a thread pool so it doesn't stall the event loop.
     await asyncio.to_thread(_validate_fetch_url, body.url)
     try:
-        t0 = time.monotonic()
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
             resp = await client.get(
                 body.url,
@@ -297,33 +270,14 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
             resp.raise_for_status()
             raw_html = resp.text
 
-        # Re-validate the final URL after redirects — a redirect chain could
-        # land on an internal service even if the original URL was public.
-        # Note: this catches redirect-based SSRF but not DNS rebinding (the TCP
-        # connection is already established by this point). A full DNS-pinning
-        # fix would require a custom httpx transport.
-        final_url = str(resp.url)
-        if final_url != body.url:
-            logger.info("[fetch-jd] followed redirect  user=%s  original=%r  final=%r",
-                        ctx.user.id, body.url, final_url)
-            await asyncio.to_thread(_validate_fetch_url, final_url)
-
-        fetch_ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[fetch-jd] fetched  user=%s  url=%r  status=%d  html_len=%d  ms=%d",
-                    ctx.user.id, body.url, resp.status_code, len(raw_html), fetch_ms)
-
         # Strategy 1: JSON-LD structured data (handles JS-rendered ATS platforms)
         text = _extract_jsonld_job(raw_html)
-        if len(text) >= 100:
-            logger.info("[fetch-jd] extracted via JSON-LD  user=%s  chars=%d", ctx.user.id, len(text))
-        else:
-            # Strategy 2: Full HTML strip (server-rendered pages, company career sites)
+
+        # Strategy 2: Full HTML strip (server-rendered pages, company career sites)
+        if len(text) < 100:
             text = _strip_html(raw_html)
-            logger.info("[fetch-jd] extracted via HTML strip  user=%s  chars=%d", ctx.user.id, len(text))
 
         if len(text) < 100:
-            logger.warning("[fetch-jd] 400 extracted text too short  user=%s  url=%r  chars=%d",
-                           ctx.user.id, body.url, len(text))
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -332,21 +286,17 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
                     "Try copying the job description text and pasting it directly."
                 )
             )
-        logger.info("[fetch-jd] COMPLETE  user=%s  final_chars=%d", ctx.user.id, min(len(text), MAX_JD_LENGTH))
         return {"text": text[:MAX_JD_LENGTH]}
     except HTTPException:
         raise
     except httpx.TimeoutException:
-        logger.warning("[fetch-jd] 400 timeout  user=%s  url=%r", ctx.user.id, body.url)
         raise HTTPException(status_code=400, detail="The page took too long to respond. Try pasting the job description text instead.")
     except httpx.HTTPStatusError as e:
-        http_status = e.response.status_code
-        logger.warning("[fetch-jd] 400 HTTP error  user=%s  url=%r  upstream_status=%d", ctx.user.id, body.url, http_status)
-        if http_status == 403:
+        status = e.response.status_code
+        if status == 403:
             raise HTTPException(status_code=400, detail="The site blocked the request (403 Forbidden). Paste the job description text instead.")
-        raise HTTPException(status_code=400, detail=f"The site returned an error ({http_status}). Try pasting the text directly.")
+        raise HTTPException(status_code=400, detail=f"The site returned an error ({status}). Try pasting the text directly.")
     except Exception as e:
-        logger.error("[fetch-jd] 400 unexpected error  user=%s  url=%r  error=%s", ctx.user.id, body.url, e)
         raise HTTPException(status_code=400, detail=f"Could not fetch URL: {str(e)}")
 
 
@@ -365,8 +315,6 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
         data: {"done": true, "id": "…"}\n\n — stream complete, DB record ID included
         data: {"error": "msg"}\n\n        — Claude API error mid-stream
     """
-    logger.info("[stream-tailor] START  user=%s  company=%r  job_title=%r  jd_len=%d  max_roles=%d",
-                ctx.user.id, body.company, body.job_title, len(body.job_description), body.max_roles)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
@@ -375,16 +323,13 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
         lambda: db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     )
     if not master_result.data or not master_result.data[0]["content"]:
-        logger.warning("[stream-tailor] 400 no master resume  user=%s", ctx.user.id)
         raise HTTPException(status_code=400, detail="No master resume found. Upload files and synthesize first.")
 
     master_content = master_result.data[0]["content"]
-    logger.debug("[stream-tailor] master resume loaded  user=%s  chars=%d", ctx.user.id, len(master_content))
     profile_result = await asyncio.to_thread(
         lambda: db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     )
     profile = profile_result.data[0] if profile_result.data else {}
-    logger.debug("[stream-tailor] profile loaded  user=%s  has_profile=%s", ctx.user.id, bool(profile))
 
     # Capture local refs so the async generator closure doesn't hold the full request scope
     user_id   = str(ctx.user.id)
@@ -395,8 +340,6 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
 
     async def _generate():
         full_chunks: list[str] = []
-        logger.info("[stream-tailor] Claude stream starting  user=%s", user_id)
-        t0_stream = time.monotonic()
         try:
             async for chunk in claude_service.stream_tailor_resume_async(
                 master_resume=master_content,
@@ -409,20 +352,11 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
                 full_chunks.append(chunk)
                 yield f"data: {_json.dumps({'chunk': chunk})}\n\n"
         except anthropic.APITimeoutError:
-            logger.error("[stream-tailor] Claude timeout mid-stream  user=%s  chunks_so_far=%d",
-                         user_id, len(full_chunks))
             yield f"data: {_json.dumps({'error': 'AI request timed out. Please try again.'})}\n\n"
             return
         except Exception as e:
-            logger.error("[stream-tailor] Claude stream error  user=%s  chunks_so_far=%d  error=%s",
-                         user_id, len(full_chunks), e)
             yield f"data: {_json.dumps({'error': str(e)})}\n\n"
             return
-
-        stream_ms = int((time.monotonic() - t0_stream) * 1000)
-        total_chars = sum(len(c) for c in full_chunks)
-        logger.info("[stream-tailor] Claude stream complete  user=%s  chunks=%d  total_chars=%d  ms=%d",
-                    user_id, len(full_chunks), total_chars, stream_ms)
 
         # Save completed resume to DB after streaming finishes.
         # asyncio.to_thread keeps the sync Supabase call off the event loop (TD-17).
@@ -433,11 +367,7 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
         # fresh record.
         tailored_text = "".join(full_chunks)
         try:
-            # asyncio.shield() prevents the DB insert from being cancelled if the
-            # SSE client disconnects before this point. Without shield, a client
-            # navigating away mid-stream would cancel the generator and silently
-            # lose the completed resume from history.
-            insert_result = await asyncio.shield(asyncio.to_thread(
+            insert_result = await asyncio.to_thread(
                 lambda: admin.table("tailored_resumes").insert({
                     "user_id":          user_id,
                     "job_title":        job_title,
@@ -445,12 +375,9 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
                     "job_description":  job_desc,
                     "tailored_content": tailored_text,
                 }).execute()
-            ))
+            )
             record_id = insert_result.data[0]["id"] if insert_result.data else None
-            logger.info("[stream-tailor] DB insert OK  user=%s  record_id=%s  company=%r  job_title=%r",
-                        user_id, record_id, company, job_title)
-        except Exception as e:
-            logger.error("[stream-tailor] DB insert FAILED (record lost)  user=%s  error=%s", user_id, e)
+        except Exception:
             record_id = None
 
         yield f"data: {_json.dumps({'done': True, 'id': record_id})}\n\n"
@@ -493,7 +420,6 @@ def get_history(
     """
     limit = min(max(1, limit), 200)   # clamp: 1 ≤ limit ≤ 200
     offset = max(0, offset)
-    logger.info("[history] START  user=%s  limit=%d  offset=%d", ctx.user.id, limit, offset)
 
     db = get_client(ctx.token)
 
@@ -505,7 +431,6 @@ def get_history(
         .execute()
     # Use isinstance so test mocks (MagicMock, not None) don't slip past the guard.
     total = count_result.count if isinstance(count_result.count, int) else 0
-    logger.debug("[history] count query returned total=%d  user=%s", total, ctx.user.id)
 
     result = db.table("tailored_resumes") \
         .select("id, job_title, company, created_at") \
@@ -521,16 +446,12 @@ def get_history(
     if seen > total:
         total = seen
 
-    has_more = seen < total
-    logger.info("[history] COMPLETE  user=%s  items=%d  total=%d  has_more=%s  offset=%d",
-                ctx.user.id, len(items), total, has_more, offset)
-
     return {
         "items":    items,
         "total":    total,
         "limit":    limit,
         "offset":   offset,
-        "has_more": has_more,
+        "has_more": seen < total,
     }
 
 
@@ -546,8 +467,6 @@ def refine_tailored(
     Inline refinement chat for a specific tailored resume.
     Claude asks targeted questions and rewrites the resume when the user provides new info.
     """
-    logger.info("[refine] START  user=%s  record_id=%s  msg_len=%d  history_turns=%d",
-                ctx.user.id, record_id, len(body.message), len(body.history))
     db = get_client(ctx.token)
     admin = get_admin_client()
 
@@ -557,25 +476,18 @@ def refine_tailored(
         .eq("user_id", str(ctx.user.id)) \
         .execute()
     if not result.data:
-        logger.warning("[refine] 404 record not found  user=%s  record_id=%s", ctx.user.id, record_id)
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-    job_title_str = (record.get("job_title") or "").strip()
-    company_str   = (record.get("company") or "").strip()
-    logger.debug("[refine] record loaded  user=%s  record_id=%s  job_title=%r  company=%r",
-                 ctx.user.id, record_id, job_title_str, company_str)
-
     profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
     profile = profile_result.data[0] if profile_result.data else {}
 
     # Fetch master resume so Claude has full career context without the user having to paste it
     master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     master_content = master_result.data[0].get("content", "") if master_result.data else ""
-    logger.debug("[refine] master resume loaded  user=%s  master_chars=%d", ctx.user.id, len(master_content))
 
-    job_title = job_title_str
-    company   = company_str
+    job_title = (record.get("job_title") or "").strip()
+    company = (record.get("company") or "").strip()
     if job_title and company:
         role_label = f"{job_title} at {company}"
     elif job_title:
@@ -616,10 +528,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
     trimmed_history = [m.model_dump() for m in body.history[-MAX_HISTORY_TURNS:]]
     messages = trimmed_history + [{"role": "user", "content": body.message}]
 
-    logger.info("[refine] calling Claude  user=%s  record_id=%s  total_messages=%d",
-                ctx.user.id, record_id, len(messages))
     try:
-        t0 = time.monotonic()
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=3000,
@@ -627,14 +536,9 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
             messages=messages,
             timeout=_API_TIMEOUT,
         )
-        ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[refine] Claude OK  user=%s  record_id=%s  reply_chars=%d  ms=%d",
-                    ctx.user.id, record_id, len(response.content[0].text), ms)
     except anthropic.APITimeoutError:
-        logger.error("[refine] 504 Claude timeout  user=%s  record_id=%s", ctx.user.id, record_id)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[refine] 502 Claude error  user=%s  record_id=%s  error=%s", ctx.user.id, record_id, e)
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
     reply = response.content[0].text
@@ -647,116 +551,57 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
         updated_content = reply[content_start:update_end].strip()
         admin.table("tailored_resumes").update({
             "tailored_content": updated_content
-        }).eq("id", str(record_id)).eq("user_id", str(ctx.user.id)).execute()
+        }).eq("id", str(record_id)).execute()
         visible_reply = reply[:update_start].strip()
-        logger.info("[refine] resume updated in DB  user=%s  record_id=%s  updated_chars=%d",
-                    ctx.user.id, record_id, len(updated_content))
     else:
         visible_reply = reply
-        logger.debug("[refine] no UPDATE block in reply — resume unchanged  user=%s  record_id=%s",
-                     ctx.user.id, record_id)
 
-    logger.info("[refine] COMPLETE  user=%s  record_id=%s  reply_chars=%d  updated=%s",
-                ctx.user.id, record_id, len(visible_reply), updated_content is not None)
     return {
         "reply": visible_reply,
         "updated_content": updated_content,
     }
 
 
-@router.api_route("/{record_id}/pdf", methods=["GET", "HEAD"])
-@router.api_route("/{record_id}/pdf/{filename}", methods=["GET", "HEAD"])
-@limiter.limit("60/minute")
-async def download_pdf(
+@router.get("/{record_id}/pdf")
+@limiter.limit("20/minute")
+def download_pdf(
     request: Request,
     record_id: uuid.UUID,   # FastAPI validates and returns 422 for non-UUID input (TD-03)
-    filename: str = "",     # ignored server-side — present so Chrome reads it from the URL path
     ctx: AuthContext = Depends(require_user),
 ):
     """Generate and return a PDF for a tailored resume record.
-
-    Accepts both GET and HEAD.  The frontend sends HEAD first to validate auth
-    and reachability without triggering LibreOffice, then fires a direct anchor
-    click for the real GET.  This avoids Chrome's ~5-second user-activation
-    window that caused blob-URL downloads to save with UUID filenames.
 
     Renders via the FDE DOCX renderer (LibreOffice headless → PDF).
     Rate-limited because LibreOffice is CPU-heavy and a single user could
     otherwise spike the Render free instance by hammering this endpoint.
     """
-    logger.info(f"[download_pdf] START  method={request.method}  record_id={record_id}  user={ctx.user.id}")
+    db = get_client(ctx.token)
 
-    logger.info(f"[download_pdf] querying tailored_resumes for record_id={record_id}")
-    try:
-        db = get_client(ctx.token)
-        result = await asyncio.to_thread(
-            lambda: db.table("tailored_resumes")
-                .select("*")
-                .eq("id", str(record_id))
-                .eq("user_id", str(ctx.user.id))
-                .execute()
-        )
-        logger.info(f"[download_pdf] DB query returned {len(result.data)} row(s)")
-    except Exception as e:
-        logger.error(f"[download_pdf] DB query FAILED: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    result = db.table("tailored_resumes") \
+        .select("*") \
+        .eq("id", str(record_id)) \
+        .eq("user_id", str(ctx.user.id)) \
+        .execute()
 
     if not result.data:
-        logger.warning(f"[download_pdf] 404 — no record found for record_id={record_id} user={ctx.user.id}")
         raise HTTPException(status_code=404, detail="Tailored resume not found")
 
     record = result.data[0]
-    logger.info(f"[download_pdf] record found: company={record.get('company')!r}  job_title={record.get('job_title')!r}")
+    profile_result = db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+    profile = profile_result.data[0] if profile_result.data else {}
 
-    company = _safe_filename_part(record.get("company", ""), "tailored")
-    role = _safe_filename_part(record.get("job_title", ""), "resume")
-    filename = f"{company}_{role}.pdf"
-    disposition = f"attachment; filename=\"{filename}\""
-    logger.info(f"[download_pdf] filename resolved to: {filename}")
-
-    # HEAD: validate ownership + return headers only — skip LibreOffice.
-    if request.method == "HEAD":
-        logger.info(f"[download_pdf] HEAD — returning 200 with headers only")
-        return Response(
-            content=b"",
-            media_type="application/pdf",
-            headers={"Content-Disposition": disposition},
-        )
-
-    logger.info(f"[download_pdf] GET — fetching profile for user={ctx.user.id}")
     try:
-        profile_result = await asyncio.to_thread(
-            lambda: db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
-        )
-        profile = profile_result.data[0] if profile_result.data else {}
-        logger.info(f"[download_pdf] profile fetched: has_data={bool(profile_result.data)}")
+        resume_data = text_to_resume_data(record["tailored_content"], profile)
+        pdf_bytes = get_renderer().render(resume_data)
     except Exception as e:
-        logger.error(f"[download_pdf] profile fetch FAILED: {e}\n{traceback.format_exc()}")
-        profile = {}
-
-    logger.info(f"[download_pdf] parsing tailored_content into resume_data")
-    try:
-        resume_data = await asyncio.to_thread(
-            text_to_resume_data, record["tailored_content"], profile
-        )
-        logger.info(f"[download_pdf] resume_data parsed OK")
-    except Exception as e:
-        logger.error(f"[download_pdf] text_to_resume_data FAILED: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Resume parse failed: {str(e)}")
-
-    logger.info(f"[download_pdf] calling renderer (LibreOffice) — acquiring semaphore")
-    try:
-        async with _pdf_semaphore:
-            logger.info(f"[download_pdf] semaphore acquired — starting LibreOffice")
-            pdf_bytes = await asyncio.to_thread(get_renderer().render, resume_data)
-        logger.info(f"[download_pdf] renderer returned {len(pdf_bytes)} bytes")
-    except Exception as e:
-        logger.error(f"[download_pdf] renderer FAILED: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
-    logger.info(f"[download_pdf] returning PDF response  filename={filename}  size={len(pdf_bytes)}")
+    company = _safe_filename_part(record.get("company", ""), "resume")
+    role = _safe_filename_part(record.get("job_title", ""), "role")
+    filename = f"{company}_{role}.pdf"
+
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": disposition},
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
     )

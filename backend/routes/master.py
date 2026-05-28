@@ -5,6 +5,7 @@ import logging
 import time
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from datetime import datetime, timezone
@@ -29,11 +30,41 @@ def _get_profile(db, user_id: str) -> dict:
 @limiter.limit("60/minute")
 def get_master_resume(request: Request, ctx: AuthContext = Depends(require_user)):
     """Get the current master resume for the user."""
+    logger.debug("[master-get] user=%s", ctx.user.id)
     db = get_client(ctx.token)
     result = db.table("master_resumes").select("*").eq("user_id", str(ctx.user.id)).execute()
     if not result.data:
+        logger.debug("[master-get] no master resume found  user=%s", ctx.user.id)
         return {"content": None, "last_updated": None}
+    chars = len(result.data[0].get("content") or "")
+    logger.debug("[master-get] found  user=%s  chars=%d", ctx.user.id, chars)
     return result.data[0]
+
+
+@router.get("/download")
+@router.get("/download/{filename}")   # filename in URL path — Chrome derives save-as name from it
+@limiter.limit("30/minute")
+def download_master_resume(
+    request: Request,
+    filename: str = "",               # ignored server-side; present so Chrome reads it from the URL
+    ctx: AuthContext = Depends(require_user),
+):
+    """Download the current master resume as a plain-text .txt file.
+
+    The filename is embedded as the last URL segment (/download/Master_Resume.txt)
+    so Chrome derives the save-as name from the path directly — Content-Disposition
+    is stripped by BaseHTTPMiddleware before it reaches the browser (same fix as PDF route).
+    """
+    logger.info("[master-download] user=%s", ctx.user.id)
+    db = get_client(ctx.token)
+    result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
+    if not result.data or not result.data[0].get("content"):
+        raise HTTPException(status_code=404, detail="No master resume found. Upload files and synthesize first.")
+    content = result.data[0]["content"]
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+    )
 
 
 @router.post("/synthesize")
@@ -43,6 +74,7 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
     Re-synthesize the master resume from all uploaded resume files.
     Call this after uploading new files.
     """
+    logger.info("[synthesize] START  user=%s", ctx.user.id)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
@@ -53,33 +85,45 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
         .execute()
 
     if not files.data:
+        logger.warning("[synthesize] 400 no resume files  user=%s", ctx.user.id)
         raise HTTPException(status_code=400, detail="No resume files uploaded yet. Upload at least one file first.")
 
     texts = [f["extracted_text"] for f in files.data if f.get("extracted_text")]
+    logger.info("[synthesize] found %d file(s) with extracted text (of %d total)  user=%s",
+                len(texts), len(files.data), ctx.user.id)
     if not texts:
+        logger.warning("[synthesize] 400 no extracted text in any file  user=%s", ctx.user.id)
         raise HTTPException(status_code=400, detail="Could not extract text from uploaded files.")
 
     profile = _get_profile(db, str(ctx.user.id))
+    logger.debug("[synthesize] profile loaded  user=%s  has_profile=%s", ctx.user.id, bool(profile))
 
     # Synthesize via Claude
+    logger.info("[synthesize] calling Claude  user=%s  file_count=%d", ctx.user.id, len(texts))
     try:
+        t0 = time.monotonic()
         master_content = claude_service.synthesize_master_resume(texts, profile)
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info("[synthesize] Claude OK  user=%s  output_chars=%d  ms=%d",
+                    ctx.user.id, len(master_content), ms)
+    except anthropic.APITimeoutError:
+        logger.error("[synthesize] 504 Claude timeout  user=%s", ctx.user.id)
+        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
+        logger.error("[synthesize] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
 
-    # Upsert master resume — use admin client for upsert to avoid RLS insert policy issues
-    existing = admin.table("master_resumes").select("id").eq("user_id", str(ctx.user.id)).execute()
-    if existing.data:
-        admin.table("master_resumes").update({
-            "content": master_content,
-            "last_updated": datetime.now(timezone.utc).isoformat()
-        }).eq("user_id", str(ctx.user.id)).execute()
-    else:
-        admin.table("master_resumes").insert({
-            "user_id": str(ctx.user.id),
-            "content": master_content
-        }).execute()
+    # Upsert master resume — single round trip, no TOCTOU race if two requests
+    # hit synthesize concurrently (both would have hit the empty-branch and tried
+    # to insert, with one failing on the unique constraint).
+    admin.table("master_resumes").upsert({
+        "user_id":      str(ctx.user.id),
+        "content":      master_content,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }, on_conflict="user_id").execute()
+    logger.info("[synthesize] master resume upserted  user=%s  chars=%d", ctx.user.id, len(master_content))
 
+    logger.info("[synthesize] COMPLETE  user=%s", ctx.user.id)
     return {"message": "Master resume synthesized", "preview": master_content[:500] + "..."}
 
 
@@ -110,13 +154,17 @@ def gap_fill_chat(request: Request, body: GapMessage, ctx: AuthContext = Depends
     asks targeted questions to surface missing achievements, and updates it.
     Returns Claude's next question or confirmation that the resume was updated.
     """
+    logger.info("[gap-fill] START  user=%s  msg_len=%d  history_turns=%d",
+                ctx.user.id, len(body.message), len(body.history))
     db = get_client(ctx.token)
     admin = get_admin_client()
     profile = _get_profile(db, str(ctx.user.id))
+    logger.debug("[gap-fill] profile loaded  user=%s  has_profile=%s", ctx.user.id, bool(profile))
 
     # Get current master resume
     master_result = db.table("master_resumes").select("content").eq("user_id", str(ctx.user.id)).execute()
     master_content = master_result.data[0]["content"] if master_result.data else ""
+    logger.debug("[gap-fill] master resume loaded  user=%s  chars=%d", ctx.user.id, len(master_content))
 
     system_prompt = f"""You are a career coach and expert resume writer helping {profile.get('full_name', 'the user')} improve their master resume.
 
@@ -148,6 +196,7 @@ Current master resume:
     trimmed_history = [m.model_dump() for m in body.history[-MAX_HISTORY_TURNS:]]
     messages = trimmed_history + [{"role": "user", "content": body.message}]
 
+    logger.info("[gap-fill] calling Claude  user=%s  total_messages=%d", ctx.user.id, len(messages))
     t0 = time.monotonic()
     try:
         response = ai_client.messages.create(
@@ -157,17 +206,15 @@ Current master resume:
             messages=messages,
             timeout=claude_service.API_TIMEOUT,
         )
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info("[gap-fill] Claude OK  user=%s  input_tokens=%d  output_tokens=%d  ms=%d",
+                    ctx.user.id, response.usage.input_tokens, response.usage.output_tokens, ms)
     except anthropic.APITimeoutError:
+        logger.error("[gap-fill] 504 Claude timeout  user=%s", ctx.user.id)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
+        logger.error("[gap-fill] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
         raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
-    logger.info(
-        "claude[gap-fill] user=%s input=%d output=%d ms=%d",
-        str(ctx.user.id)[:8],
-        response.usage.input_tokens,
-        response.usage.output_tokens,
-        int((time.monotonic() - t0) * 1000),
-    )
 
     reply = response.content[0].text
 
@@ -179,24 +226,22 @@ Current master resume:
         content_start = update_start + len("UPDATE_MASTER_RESUME:")
         updated_master = reply[content_start:update_end].strip()
 
-        # Save updated master — use admin client for upsert
-        existing = admin.table("master_resumes").select("id").eq("user_id", str(ctx.user.id)).execute()
-        if existing.data:
-            admin.table("master_resumes").update({
-                "content": updated_master,
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            }).eq("user_id", str(ctx.user.id)).execute()
-        else:
-            admin.table("master_resumes").insert({
-                "user_id": str(ctx.user.id),
-                "content": updated_master
-            }).execute()
+        # Save updated master — single upsert avoids TOCTOU race and extra round trip
+        admin.table("master_resumes").upsert({
+            "user_id":      str(ctx.user.id),
+            "content":      updated_master,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="user_id").execute()
 
         # Strip the update block from the visible reply
         visible_reply = reply[:update_start].strip()
+        logger.info("[gap-fill] master resume updated  user=%s  updated_chars=%d", ctx.user.id, len(updated_master))
     else:
         visible_reply = reply
+        logger.debug("[gap-fill] no UPDATE block — master unchanged  user=%s", ctx.user.id)
 
+    logger.info("[gap-fill] COMPLETE  user=%s  reply_chars=%d  master_updated=%s",
+                ctx.user.id, len(visible_reply), updated_master is not None)
     return {
         "reply": visible_reply,
         "master_updated": updated_master is not None

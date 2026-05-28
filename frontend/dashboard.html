@@ -139,8 +139,15 @@
         details.appendChild(summary);
         details.appendChild(pre);
 
+        const dlBtn = document.createElement("a");
+        dlBtn.href = "/api/master/download/Master_Resume.txt";
+        dlBtn.className = "btn btn-outline";
+        dlBtn.style.cssText = "display:inline-block;margin-top:10px;font-size:13px;";
+        dlBtn.textContent = "⬇ Download Master Resume";
+
         masterEl.appendChild(alertDiv);
         masterEl.appendChild(details);
+        masterEl.appendChild(dlBtn);
       } else {
         const div = document.createElement("div");
         div.className = "alert alert-info";

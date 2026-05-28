@@ -51,6 +51,11 @@ CONTENT RULES:
 - Remove duplicates but keep the most detailed version of each entry
 - Do NOT invent or embellish anything — only use what is explicitly stated
 - Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
+- PRESERVE EXACT TOOL AND SYSTEM NAMES as they appear in the source files — do not normalize,
+  abbreviate, or paraphrase. ATS systems match on exact strings. Write "CBRE Columbia™ Tax
+  Management Platform" not "tax software", "CoStar Real Estate Manager Offline Module" not
+  "CoStar", "Oracle E-Business Suite (EBS)" not "Oracle ERP". When a tool name appears multiple
+  times across files, keep the most complete version.
 
 STRICT OUTPUT FORMAT:
 
@@ -67,7 +72,7 @@ STRICT OUTPUT FORMAT:
 
 4. SKILLS section — CRITICAL:
    - Each category on ONE line: Category Name: item1, item2, item3
-   - Example: Systems & Tools: CoStar, Oracle EBS, Coupa, Power Automate
+   - Example: Systems & Tools: CoStar Real Estate Manager, Oracle E-Business Suite (EBS), Coupa, Power Automate
    - Do NOT write multi-line paragraphs for skills
 
 5. EDUCATION:
@@ -90,8 +95,7 @@ Output the complete master resume now, following the STRICT OUTPUT FORMAT above:
         timeout=API_TIMEOUT,
     )
     logger.info(
-        "claude[synthesize] email=%s input=%d output=%d ms=%d",
-        profile.get("email", "?"),
+        "claude[synthesize] input=%d output=%d ms=%d",
         message.usage.input_tokens,
         message.usage.output_tokens,
         int((time.monotonic() - t0) * 1000),
@@ -123,10 +127,18 @@ CONTENT RULES:
 - Reorder bullet points within each role to lead with the most relevant ones
 - Adjust the summary to directly address what the employer is looking for
 - Do NOT fabricate, invent, or add anything not in the master resume
-- Include ONLY the {max_roles} most relevant roles in the EXPERIENCE section — pick the jobs that best match the job description and omit the rest
-- Within each included role, trim less-relevant bullets so the overall resume fits one page
+- ROLE SELECTION — follow this priority order exactly:
+    1. Always include the candidate's current or most recent role, regardless of JD relevance.
+       An unexplained gap at the top of the timeline is an automatic red flag for recruiters and ATS.
+    2. Select remaining roles to avoid creating gaps longer than 6 months between included positions.
+       If a less-relevant role is needed to bridge a gap, include it with trimmed bullets.
+    3. Within the constraint of no gaps, maximize JD relevance when choosing which roles to include.
+    4. Include no more than {max_roles} roles total.
+- Within each included role, trim less-relevant bullets so the overall resume fits the target length
 - Match terminology from the job description naturally (don't keyword-stuff)
-- Keep it to one page worth of content (approximately 600-750 words of body text)
+- TARGET LENGTH: 475–600 words of body text (excludes header and section labels). This is the
+  data-backed sweet spot for interview callback rate — tighter is better. Cut weak bullets
+  before expanding. Do not pad to fill space.
 
 STRICT OUTPUT FORMAT — follow exactly or the PDF renderer will break:
 
@@ -157,10 +169,13 @@ STRICT OUTPUT FORMAT — follow exactly or the PDF renderer will break:
    - Do NOT write multi-line skill paragraphs
    - Do NOT use ALL CAPS for the category names in this section
 
-5. EDUCATION section rules:
-   - Copy ONLY actual degrees/certifications from the master resume
+5. EDUCATION section rules — ZERO TOLERANCE FOR FABRICATION:
+   - NEVER invent, infer, or guess education credentials. If a degree, school, or year does not appear
+     verbatim in the MASTER RESUME text above, it MUST NOT appear in your output.
+   - Copy ONLY degrees/certifications that are explicitly written in the master resume — word for word.
    - Each entry on its own line: Degree | School | Year
-   - If no formal degree is listed in the master resume, omit the EDUCATION section entirely
+   - If you cannot find an explicit, written degree entry in the master resume, omit EDUCATION entirely.
+   - Fabricating education (wrong school, wrong degree, invented dates) is a disqualifying error.
 
 MASTER RESUME:
 {master_resume}
@@ -191,8 +206,7 @@ def tailor_resume(master_resume: str, job_description: str, profile: dict, job_t
         timeout=API_TIMEOUT,
     )
     logger.info(
-        "claude[tailor] email=%s input=%d output=%d ms=%d",
-        profile.get("email", "?"),
+        "claude[tailor] input=%d output=%d ms=%d",
         message.usage.input_tokens,
         message.usage.output_tokens,
         int((time.monotonic() - t0) * 1000),
@@ -259,6 +273,9 @@ async def stream_tailor_resume_async(
     target = f"{job_title} at {company}" if job_title and company else "the role below"
     prompt = _build_tailor_prompt(name, contact_block, target, master_resume, job_description, max_roles=max_roles)
 
+    logger.info("claude[stream-async] START  target=%r  prompt_chars=%d", target, len(prompt))
+    t0 = time.monotonic()
+    chunk_count = 0
     async with async_client.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=3000,
@@ -266,7 +283,10 @@ async def stream_tailor_resume_async(
         timeout=API_TIMEOUT,
     ) as stream:
         async for text in stream.text_stream:
+            chunk_count += 1
             yield text
+    ms = int((time.monotonic() - t0) * 1000)
+    logger.info("claude[stream-async] COMPLETE  chunks=%d  ms=%d", chunk_count, ms)
 
 
 def _build_contact_block(profile: dict) -> str:
