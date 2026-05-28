@@ -15,7 +15,7 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 async_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 API_TIMEOUT        = 60.0          # seconds — raises anthropic.APITimeoutError on breach (TD-01)
-MAX_SYNTHESIS_CHARS = 400_000       # ~100k tokens — safe for Claude's 200k context window (TD-02)
+MAX_SYNTHESIS_CHARS = 150_000       # ~37k tokens — leaves room for prompt + output (TD-02)
 
 
 def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
@@ -23,40 +23,20 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     Given a list of raw resume texts and the user's profile info,
     produce a single comprehensive master resume in structured text format.
     """
-    # Cap total input to prevent context overflow (TD-02).
-    # We use `continue` (not `break`) so one oversized file doesn't block
-    # smaller files that appear later in the list.  Each oversized file is
-    # hard-truncated and included rather than silently dropped, which is
-    # always better than losing data entirely.
+    # Cap total input to prevent context overflow (TD-02)
     running = 0
     capped: list[str] = []
-    skipped = 0
     for t in resume_texts:
         if running + len(t) > MAX_SYNTHESIS_CHARS:
-            remaining = MAX_SYNTHESIS_CHARS - running
-            if remaining > 500:
-                # Enough room to include a useful chunk — truncate and include
-                capped.append(t[:remaining])
-                running = MAX_SYNTHESIS_CHARS
-                logger.warning(
-                    "synthesize: file %d/%d truncated to %d chars to stay within limit",
-                    len(capped), len(resume_texts), remaining,
-                )
-            else:
-                skipped += 1
-                logger.warning(
-                    "synthesize: file %d/%d skipped — only %d chars remaining in budget",
-                    len(capped) + skipped, len(resume_texts), remaining,
-                )
-            continue
+            logger.warning(
+                "synthesize: capped at %d/%d files (%d chars) — "
+                "remaining files omitted to stay within context limit",
+                len(capped), len(resume_texts), running,
+            )
+            break
         capped.append(t)
         running += len(t)
-    if skipped:
-        logger.warning(
-            "synthesize: %d/%d file(s) skipped — increase MAX_SYNTHESIS_CHARS or remove large files",
-            skipped, len(resume_texts),
-        )
-    if not capped:               # every file exceeded limit — truncate the first one hard
+    if not capped:               # single file exceeds limit — truncate it hard
         capped = [resume_texts[0][:MAX_SYNTHESIS_CHARS]]
 
     combined = "\n\n---RESUME FILE---\n\n".join(capped)
