@@ -1,5 +1,7 @@
 from supabase import create_client, Client
 from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
+import logging
+logger = logging.getLogger(__name__)
 
 # Module-level singleton for the admin (service-role) client.
 # Initialized once at import time — safe to share across threads because
@@ -10,9 +12,14 @@ from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
 # could interact under high concurrency.
 _admin_client: Client | None = None
 
-# Anon client — for unauthenticated auth calls (e.g. sign_in_with_otp)
+_anon_client: Client | None = None
+
 def get_anon_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    """Cached anon client — reuses the httpx connection pool across OTP calls."""
+    global _anon_client
+    if _anon_client is None:
+        _anon_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    return _anon_client
 
 # Standard client (respects RLS — use for user-scoped operations)
 def get_client(user_token: str) -> Client:
@@ -52,6 +59,12 @@ def get_user_from_token(token: str):
         admin = get_admin_client()
         result = admin.auth.get_user(token)
         return result.user if result else None
-    except Exception:
-        # Malformed JWT, expired token, or network error — treat as unauthenticated
+    except Exception as e:
+        msg = str(e)
+        # Distinguish expired/invalid tokens (expected, debug level) from
+        # network/service errors (unexpected, warning level).
+        if any(kw in msg.lower() for kw in ("expired", "invalid", "jwt", "token")):
+            logger.debug("[auth] token rejected: %s", msg)
+        else:
+            logger.warning("[auth] get_user_from_token unexpected error: %s", msg)
         return None

@@ -20,11 +20,13 @@ Usage:
         client = get_client(ctx.token)   # RLS-respecting
         ...
 """
+import logging
 from dataclasses import dataclass
 from fastapi import Header, HTTPException, Request
 from services.supabase_client import get_user_from_token
 
 COOKIE_NAME = "rt_session"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,21 +45,35 @@ def require_user(request: Request, authorization: str = Header(None)) -> AuthCon
 
     Raises 401 if neither is present or the token is invalid/expired.
     """
+    path = request.url.path
+    method = request.method
+    logger.info(f"[auth] require_user  method={method}  path={path}")
+
     # ── 1. Try HttpOnly cookie ──────────────────────────────────────────────
     token = request.cookies.get(COOKIE_NAME)
+    if token:
+        logger.info(f"[auth] found cookie '{COOKIE_NAME}'  path={path}")
+    else:
+        logger.warning(f"[auth] no cookie '{COOKIE_NAME}'  path={path}")
 
     # ── 2. Fall back to Authorization header ───────────────────────────────
     if not token:
         if not authorization or not authorization.startswith("Bearer "):
+            logger.error(f"[auth] 401 — no cookie and no Bearer header  path={path}")
             raise HTTPException(status_code=401, detail="Not authenticated")
         raw = authorization.split(" ", 1)[1]
         if not raw:
+            logger.error(f"[auth] 401 — empty Bearer token  path={path}")
             raise HTTPException(status_code=401, detail="Not authenticated")
         token = raw
+        logger.info(f"[auth] using Bearer token fallback  path={path}")
 
     # ── 3. Verify the token ─────────────────────────────────────────────────
+    logger.info(f"[auth] verifying token with Supabase  path={path}")
     user = get_user_from_token(token)
     if not user:
+        logger.error(f"[auth] 401 — Supabase rejected token  path={path}")
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    logger.info(f"[auth] OK  user={user.id}  path={path}")
     return AuthContext(user=user, token=token)

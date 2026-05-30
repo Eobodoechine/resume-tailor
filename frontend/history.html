@@ -49,7 +49,7 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=9"></script>
 <script>
   requireAuth();
 
@@ -57,21 +57,35 @@
   let currentOffset = 0;
   let totalCount    = 0;
 
-  function rowHTML(r) {
-    const co  = (r.company  || "").replace(/'/g, "");
-    const ro  = (r.job_title || "").replace(/'/g, "");
-    return `
-      <tr>
-        <td style="font-weight:500">${r.job_title || "—"}</td>
-        <td>${r.company || "—"}</td>
-        <td style="color:var(--muted)">${fmtDate(r.created_at)}</td>
-        <td style="text-align:right">
-          <button class="btn btn-outline" style="font-size:12px;padding:5px 12px"
-            onclick="downloadPDF('${r.id}', '${co || "resume"}', '${ro || "role"}')">
-            PDF
-          </button>
-        </td>
-      </tr>`;
+  // Build a table row with DOM APIs — never innerHTML with user-supplied data.
+  // dataset assignment handles all attribute escaping automatically.
+  function createRow(r) {
+    const tr = document.createElement("tr");
+
+    const tdRole = document.createElement("td");
+    tdRole.style.fontWeight = "500";
+    tdRole.textContent = r.job_title || "—";
+
+    const tdCompany = document.createElement("td");
+    tdCompany.textContent = r.company || "—";
+
+    const tdDate = document.createElement("td");
+    tdDate.style.color = "var(--muted)";
+    tdDate.textContent = fmtDate(r.created_at);
+
+    const tdBtn = document.createElement("td");
+    tdBtn.style.textAlign = "right";
+    const btn = document.createElement("button");
+    btn.className = "btn btn-outline btn-download-pdf";
+    btn.style.cssText = "font-size:12px;padding:5px 12px";
+    btn.dataset.id      = r.id;
+    btn.dataset.company = r.company    || "";
+    btn.dataset.role    = r.job_title  || "";
+    btn.textContent = "PDF";
+    tdBtn.appendChild(btn);
+
+    tr.append(tdRole, tdCompany, tdDate, tdBtn);
+    return tr;
   }
 
   async function loadHistory() {
@@ -92,7 +106,8 @@
         return;
       }
 
-      tbody.innerHTML = data.items.map(rowHTML).join("");
+      tbody.innerHTML = "";
+      data.items.forEach(r => tbody.appendChild(createRow(r)));
       updateLoadMore(data.has_more);
     } catch (e) {
       if (e && e.redirecting) return;
@@ -109,8 +124,8 @@
       const data = await apiFetch(`/api/tailor/history?limit=${PAGE_SIZE}&offset=${currentOffset}`);
       totalCount     = data.total ?? totalCount;
       currentOffset += data.items.length;
-      document.getElementById("history-body").insertAdjacentHTML("beforeend",
-        data.items.map(rowHTML).join(""));
+      const tbody = document.getElementById("history-body");
+      data.items.forEach(r => tbody.appendChild(createRow(r)));
       updateLoadMore(data.has_more);
     } catch (e) {
       if (e && e.redirecting) return;
@@ -130,7 +145,10 @@
 
   async function downloadPDF(id, company, role) {
     try {
-      await apiDownload(`/api/tailor/${id}/pdf`, `${company}_${role}.pdf`);
+      const c = safeFilePart(company) || "tailored";
+      const r = safeFilePart(role)    || "resume";
+      const filename = `${c}_${r}.pdf`;
+      await apiDownload(`/api/tailor/${id}/pdf`, filename);
     } catch (e) {
       if (e && e.redirecting) return;
       alert(e.message);
@@ -138,6 +156,16 @@
   }
 
   loadHistory();
+
+  // Event delegation for PDF download buttons — avoids onclick injection risk
+  document.getElementById("history-body").addEventListener("click", function(e) {
+    const btn = e.target.closest(".btn-download-pdf");
+    if (!btn) return;
+    const id      = btn.dataset.id;
+    const company = btn.dataset.company || "";
+    const role    = btn.dataset.role    || "";
+    downloadPDF(id, company, role);
+  });
 </script>
 </body>
 </html>

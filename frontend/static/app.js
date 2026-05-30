@@ -106,46 +106,128 @@ async function apiUpload(path, formData) {
   return json;
 }
 
-// ── Blob / file download ───────────────────────────────────────────────────
-// Shared helper for any endpoint that returns binary content (PDF, etc.).
-// Handles 401 → redirect exactly like apiFetch, throws RedirectingError so
-// callers' catch blocks can bail cleanly with `if (e && e.redirecting) return;`
-async function apiDownload(path, fallbackFilename) {
-  const res = await fetch(API + path, { credentials: "include" });
+// ── File download ──────────────────────────────────────────────────────────
+// Shared helper for binary downloads (PDF, etc.).
+// Handles 401 → redirect like apiFetch; throws RedirectingError on failure.
+//
+// VERSION 8 — URL-path filename strategy
+//
+// Root cause of UUID-filename bug:
+//   BaseHTTPMiddleware (SecurityHeaders + SlidingSession) strips
+//   Content-Disposition on binary responses before Chrome sees it.
+//   Every approach that relies on the header fails.
+//
+// Fix: embed the filename as the last URL path segment:
+//   /api/tailor/{uuid}/pdf/Company_Role.pdf
+// Chrome reads it from the URL directly — no Content-Disposition needed.
+// Backend accepts /{record_id}/pdf/{filename}; the URL filename param is
+// ignored server-side (always uses DB data). a.download is belt-and-suspenders.
+//
+// Flow: HEAD first (auth check, no LibreOffice) → a.click() (GET + download).
+// Same-origin anchor clicks don't require a user-activation window.
+//
+async function apiDownload(path, suggestedFilename) {
+  console.group(`[download v8] START`);
+  console.log(`  path argument    : ${path}`);
+  console.log(`  suggestedFilename: ${JSON.stringify(suggestedFilename)}`);
+
+  // ── Build URL with filename as last path segment ──────────────────────────
+  // Chrome derives the save-as name from the last URL segment when it carries
+  // a file extension.  This bypasses Content-Disposition entirely (which
+  // BaseHTTPMiddleware strips on binary responses).
+  if (!suggestedFilename) {
+    console.warn(`[download v8] ⚠ suggestedFilename is empty/falsy — Chrome will` +
+      ` fall back to URL-path naming and may produce a UUID filename!`);
+  }
+  const fullPath = suggestedFilename
+    ? `${path}/${encodeURIComponent(suggestedFilename)}`
+    : path;
+  console.log(`  fullPath (URL)   : ${fullPath}`);
+
+  // ── 1. HEAD: auth + record-existence check (no LibreOffice) ──────────────
+  console.log(`[download v8] 1. HEAD ${fullPath}`);
+  let res;
+  try {
+    res = await fetch(API + fullPath, { credentials: "include", method: "HEAD" });
+  } catch (networkErr) {
+    console.error(`[download v8] ✗ HEAD network error — check connectivity:`, networkErr);
+    console.groupEnd();
+    throw new Error("Download failed — network error. Check your connection.");
+  }
+
+  // Log every response header we care about so middleware stripping is visible.
+  console.log(`[download v8]   HEAD status          : ${res.status} ${res.statusText}`);
+  console.log(`[download v8]   Content-Type         : ${res.headers.get("Content-Type")}`);
+  console.log(`[download v8]   Content-Disposition  : ${res.headers.get("Content-Disposition")}`);
+  if (!res.headers.get("Content-Disposition")) {
+    console.warn(`[download v8]   ⚠ Content-Disposition is null — BaseHTTPMiddleware` +
+      ` stripped it (expected — URL-path method doesn't need it)`);
+  }
+
   if (res.status === 401) {
+    console.warn(`[download v8] ✗ 401 — session expired, redirecting to login`);
+    console.groupEnd();
     clearToken();
     fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
     window.location.href = "/";
     throw new RedirectingError();
   }
-  if (!res.ok) throw new Error("Download failed — please try again.");
+  if (res.status === 404) {
+    console.error(`[download v8] ✗ 404 — record not found. Check that the` +
+      ` /{record_id}/pdf/{filename} route is deployed on the backend.`);
+    console.groupEnd();
+    throw new Error(`Download failed (404) — record not found.`);
+  }
+  if (!res.ok) {
+    console.error(`[download v8] ✗ HEAD failed: ${res.status} ${res.statusText}`);
+    console.groupEnd();
+    throw new Error(`Download failed (${res.status}) — please try again.`);
+  }
+  console.log(`[download v8]   HEAD OK ✓`);
 
-  // Prefer the server-supplied filename from Content-Disposition header.
-  // The backend returns e.g. filename="TribeAI_AIWorkflowStrategist.pdf".
-  const cd = res.headers.get("Content-Disposition");
-  const serverFilename = cd?.match(/filename="([^"]+)"/)?.[1];
-  const filename = serverFilename || fallbackFilename;
-
-  const blob = await res.blob();
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href          = url;
-  a.download      = filename;
+  // ── 2. Fire download via anchor click ────────────────────────────────────
+  // Primary mechanism: Chrome reads the filename from the last URL path segment.
+  // Belt-and-suspenders: a.download is also set to the same string.
+  const a = document.createElement("a");
+  a.href = API + fullPath;
+  if (suggestedFilename) {
+    a.download = suggestedFilename;
+    console.log(`[download v8] 2. anchor.href    = ${a.href}`);
+    console.log(`[download v8]    anchor.download = "${a.download}"`);
+    console.log(`[download v8]    Chrome will save as: "${suggestedFilename}" (from URL path + download attr)`);
+  } else {
+    console.warn(`[download v8] 2. anchor.download NOT set — Chrome will derive` +
+      ` filename from URL path. If no .pdf extension is in the path, expect UUID filename.`);
+  }
   a.style.display = "none";
   document.body.appendChild(a);
+  console.log(`[download v8]    a.click() firing — GET will start LibreOffice on server`);
   a.click();
   setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 1500);
+    if (a.parentNode) a.parentNode.removeChild(a);
+    console.log(`[download v8]    anchor cleaned up`);
+  }, 100);
+  console.log(`[download v8] DONE — browser download initiated`);
+  console.groupEnd();
 }
 
 // ── Alert helper ───────────────────────────────────────────────────────────
 function showAlert(containerId, message, type = "info") {
   const el = document.getElementById(containerId);
   if (!el) return;
-  el.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+  const div = document.createElement("div");
+  div.className = `alert alert-${type}`;
+  div.textContent = message;
+  el.innerHTML = "";
+  el.appendChild(div);
   if (type === "success") setTimeout(() => el.innerHTML = "", 4000);
+}
+
+// ── Safe filename helper ───────────────────────────────────────────────────
+// Keep word chars, spaces→underscores, hyphens; strip everything else.
+// Mirrors backend's _safe_filename_part() regex.
+function safeFilePart(s) {
+  return (s || "").replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_") || "";
 }
 
 // ── Format date ────────────────────────────────────────────────────────────

@@ -1,85 +1,147 @@
 """
-Shared pytest fixtures and import stubs.
+Shared test configuration and fixtures.
 
-Heavy dependencies (supabase, anthropic, weasyprint, httpx, jinja2) are
-stubbed so route modules can be imported without the full dependency graph.
-Pure-logic functions (_parse_experience, _strip_html, etc.) are tested directly.
-Network/DB calls are mocked per-test with unittest.mock.patch.
+CRITICAL ORDERING — three things must happen BEFORE any app module is imported:
+
+  1. os.environ is populated with required vars so config._require() succeeds.
+  2. limiter module is stubbed so @limiter.limit() decorators are no-ops —
+     prevents 429s when the same endpoint is hit >N times across tests.
+  3. renderers.fde_docx is injected into sys.modules so FDEDocxRenderer never
+     tries to open the DOCX template file on disk (class attribute evaluated
+     at import time would raise FileNotFoundError in CI / fresh checkout).
+
+Everything else (supabase, anthropic clients) is lazy — no network calls on
+import — so we can let those real modules load and patch them per-test.
 """
+import os
 import sys
 from unittest.mock import MagicMock
-import pytest
 
-# ── Stub heavy third-party imports (not installed in test env) ────────────────
-# We stub only true external libs — NOT our own services — so that
-# internal pure-logic functions (e.g. _parse_experience) remain callable.
+# ── 1. Required env vars (BEFORE any app import) ─────────────────────────────
+os.environ.setdefault("SUPABASE_URL",         "https://testproject.supabase.co")
+os.environ.setdefault("SUPABASE_ANON_KEY",    "test-anon-key-abc123")
+os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-service-key-xyz789")
+# The Anthropic SDK accepts any non-empty string as api_key at init time.
+# "sk-ant-" prefix matches what the SDK expects if it does a prefix check.
+os.environ.setdefault("ANTHROPIC_API_KEY",    "sk-ant-test0000000000000000000000000000000000")
+os.environ.setdefault("ADMIN_EMAIL",          "admin@test.com")
+os.environ.setdefault("ENV",                  "development")
 
-_EXTERNAL_STUBS = {
-    # httpx is a real installed package — do NOT stub it.  TestClient (starlette)
-    # imports from httpx internally; a MagicMock stub causes a metaclass conflict
-    # that makes the entire test_http_layer.py collection fail.
-    "supabase":                    MagicMock(),
-    "anthropic":                   MagicMock(),
-    "weasyprint":                  MagicMock(),
-    "pdfplumber":                  MagicMock(),
-    "docx":                        MagicMock(),
-    "jinja2":                      MagicMock(),
-    "slowapi":                     MagicMock(),
-    "slowapi.util":                MagicMock(),
-    "slowapi.errors":              MagicMock(),
-    "sentry_sdk":                  MagicMock(),
-    "sentry_sdk.integrations":     MagicMock(),
-    "sentry_sdk.integrations.fastapi":    MagicMock(),
-    "sentry_sdk.integrations.starlette": MagicMock(),
-}
-for _mod, _stub in _EXTERNAL_STUBS.items():
-    sys.modules.setdefault(_mod, _stub)
-
-# Rate limiter stub — @limiter.limit("x/min") must be a no-op decorator
+# ── 2. Stub the rate-limiter before any route imports ────────────────────────
+# @limiter.limit("5/minute") etc. would fire for every test call that shares
+# the TestClient's loopback "127.0.0.1" key, causing 429s on tests 6+ that
+# hit the same endpoint.  Making `limit()` a passthrough decorator disables
+# rate-limiting entirely in the test environment.
+# Must happen BEFORE any route is imported so the @decorator captures the stub.
 _limiter_stub = MagicMock()
-_limiter_stub.limit = lambda *a, **kw: (lambda f: f)
+_limiter_stub.limit = lambda *a, **kw: (lambda f: f)   # no-op passthrough
 _limiter_module = MagicMock()
 _limiter_module.limiter = _limiter_stub
-sys.modules["limiter"] = _limiter_module
+sys.modules.setdefault("limiter", _limiter_module)
 
-# App config stub — list every attribute explicitly. Relying on MagicMock's
-# auto-attr fallback would let real bugs slip past (e.g. a route reading
-# COOKIE_SECURE as a MagicMock and silently treating it as truthy).
-sys.modules.setdefault("config", MagicMock(
-    SUPABASE_URL="http://fake",
-    SUPABASE_ANON_KEY="fake-anon",
-    SUPABASE_SERVICE_KEY="fake-service",
-    ANTHROPIC_API_KEY="fake-key",
-    CLAUDE_MODEL="claude-haiku-4-5-20251001",
-    RESUME_BUCKET="resume-files",
-    PDF_BUCKET="tailored-pdfs",
-    ADMIN_EMAIL="admin@example.com",
-    COOKIE_SECURE=False,
-    COOKIE_MAX_AGE=60 * 60 * 24 * 7,
-))
+# ── 3. Stub fde_docx before renderers/registry.py imports it ─────────────────
+# FDEDocxRenderer has a class-level attribute:
+#   _template_bytes: bytes = open(TEMPLATE_PATH, "rb").read()
+# This executes at class-definition time (module import).  Without the stub,
+# tests fail on any machine that doesn't have the template at the expected path.
+_fde_renderer_cls = MagicMock(name="FDEDocxRenderer")
+_fde_renderer_cls.return_value.render.return_value = b"%PDF-1.4 fake-test-pdf"
+_fde_mock_mod = MagicMock(name="renderers.fde_docx")
+_fde_mock_mod.FDEDocxRenderer = _fde_renderer_cls
+sys.modules["renderers.fde_docx"] = _fde_mock_mod
 
-# Stub services that talk to external systems — NOT pdf_generator (pure logic)
-sys.modules.setdefault("services.supabase_client", MagicMock())
-sys.modules.setdefault("services.extractor", MagicMock())
-sys.modules.setdefault("services.claude", MagicMock())
+# ── Shared constants ──────────────────────────────────────────────────────────
+import uuid
+import pytest
+
+TEST_USER_ID    = str(uuid.uuid4())
+TEST_USER_EMAIL = "user@test.com"
+ADMIN_EMAIL_STR = "admin@test.com"   # must match os.environ["ADMIN_EMAIL"] above
+FAKE_JWT        = "eyJhbGciOiJIUzI1NiJ9.test.fakesig"
+TEST_RECORD_ID  = str(uuid.uuid4())
+
+
+# ── Helper factories ──────────────────────────────────────────────────────────
+
+def make_user(email: str = TEST_USER_EMAIL, uid: str = None):
+    """Build a minimal mock Supabase User object."""
+    user       = MagicMock()
+    user.id    = uuid.UUID(uid) if uid else uuid.UUID(TEST_USER_ID)
+    user.email = email
+    return user
+
+
+def db_result(data=None, count: int = None):
+    """Create a Supabase-style query result with .data and .count."""
+    r        = MagicMock()
+    r.data   = data if data is not None else []
+    r.count  = count
+    return r
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-@pytest.fixture
+@pytest.fixture()
 def mock_user():
-    """A fake Supabase user object."""
-    user = MagicMock()
-    user.id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    user.email = "test@example.com"
-    return user
+    return make_user()
 
 
-@pytest.fixture
+@pytest.fixture()
+def admin_user():
+    return make_user(email=ADMIN_EMAIL_STR)
+
+
+@pytest.fixture()
+def authed_client(mock_user):
+    """
+    TestClient with require_user overridden so no real token verification occurs.
+
+    Each test must patch the specific Supabase calls it exercises, e.g.:
+        import routes.admin
+        monkeypatch.setattr(routes.admin, "get_admin_client", lambda: admin_mock)
+
+    Patching at the call site (the route module) rather than in
+    services.supabase_client is necessary because routes import get_admin_client
+    by name at load time — patching the source module after that has no effect.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+    from dependencies.auth import require_user, AuthContext
+
+    ctx = AuthContext(user=mock_user, token=FAKE_JWT)
+    app.dependency_overrides[require_user] = lambda: ctx
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def admin_authed_client(admin_user):
+    """
+    Like authed_client but the authenticated user's email == ADMIN_EMAIL.
+    require_admin in admin.py does an email-equality check first and returns
+    early, so no profiles.is_admin DB query is needed for admin route access.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+    from dependencies.auth import require_user, AuthContext
+
+    ctx = AuthContext(user=admin_user, token=FAKE_JWT)
+    app.dependency_overrides[require_user] = lambda: ctx
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
 def valid_token():
-    return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.valid.token"
+    return FAKE_JWT
 
 
-@pytest.fixture
-def auth_header(valid_token):
-    return f"Bearer {valid_token}"
+@pytest.fixture()
+def auth_header():
+    return f"Bearer {FAKE_JWT}"

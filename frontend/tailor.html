@@ -426,7 +426,7 @@
 
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=9"></script>
 <script>
   requireAuth();
 
@@ -737,6 +737,7 @@
   });
 
   // ── PDF download ───────────────────────────────────────────────────────────
+  // safeFilePart is defined in app.js (shared utility — no duplicate here).
 
   async function downloadPDF() {
     if (!currentRecordId) return;
@@ -745,9 +746,13 @@
     btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building PDF…`;
 
     try {
-      // apiDownload() in app.js handles 401 redirect and blob trigger —
-      // no more duplicated raw fetch logic here.
-      await apiDownload(`/api/tailor/${currentRecordId}/pdf`, "tailored_resume.pdf");
+      const company  = document.getElementById("company").value.trim();
+      const jobTitle = document.getElementById("job-title").value.trim();
+      const c = safeFilePart(company)  || "tailored";
+      const r = safeFilePart(jobTitle) || "resume";
+      const filename = `${c}_${r}.pdf`;
+
+      await apiDownload(`/api/tailor/${currentRecordId}/pdf`, filename);
       setStep(4);
       showAlert("alert-box", "✓ PDF saved — check your Downloads folder (or your browser's download bar at the bottom of the screen).", "success");
     } catch (e) {

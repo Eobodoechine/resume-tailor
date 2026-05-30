@@ -50,12 +50,14 @@ def _check_magic_bytes(data: bytes, ext: str) -> bool:
 @limiter.limit("60/minute")
 def list_resumes(request: Request, ctx: AuthContext = Depends(require_user)):
     """List all uploaded resume files for the current user."""
+    logger.debug("[resumes] list  user=%s", ctx.user.id)
     db = get_client(ctx.token)
     result = db.table("resume_files") \
         .select("id, filename, file_type, uploaded_at") \
         .eq("user_id", str(ctx.user.id)) \
         .order("uploaded_at", desc=True) \
         .execute()
+    logger.debug("[resumes] list returned %d file(s)  user=%s", len(result.data), ctx.user.id)
     return result.data
 
 
@@ -67,6 +69,10 @@ async def upload_resume(
     ctx: AuthContext = Depends(require_user)
 ):
     """Upload a new resume file. Extracts text and stores in Supabase."""
+    raw_filename = file.filename or "resume"
+    safe_filename = Path(raw_filename).name
+    logger.info("[resumes] upload START  user=%s  filename=%r  content_type=%s",
+                ctx.user.id, safe_filename, file.content_type)
     admin = get_admin_client()
 
     # Enforce per-user file cap before accepting the upload
@@ -75,32 +81,43 @@ async def upload_resume(
         .eq("user_id", str(ctx.user.id)) \
         .execute()
     existing_count = count_result.count if count_result.count is not None else len(count_result.data)
+    logger.debug("[resumes] upload file cap check  user=%s  existing=%d  max=%d",
+                 ctx.user.id, existing_count, MAX_FILES_PER_USER)
     if existing_count >= MAX_FILES_PER_USER:
+        logger.warning("[resumes] upload 400 file cap reached  user=%s  existing=%d",
+                       ctx.user.id, existing_count)
         raise HTTPException(
             status_code=400,
             detail=f"You've reached the maximum of {MAX_FILES_PER_USER} uploaded files. Delete some before uploading more."
         )
 
     # Validate file extension
-    raw_filename = file.filename or "resume"
-    # Strip path components to prevent path traversal attacks
-    safe_filename = Path(raw_filename).name
     ext = safe_filename.lower().rsplit(".", 1)[-1] if "." in safe_filename else ""
     if ext not in ("pdf", "docx", "doc"):
+        logger.warning("[resumes] upload 400 bad extension  user=%s  filename=%r  ext=%r",
+                       ctx.user.id, safe_filename, ext)
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
 
     # Validate MIME type (defense-in-depth alongside extension check)
     content_type = file.content_type or ""
     if content_type and content_type not in ALLOWED_MIME_TYPES:
+        logger.warning("[resumes] upload 400 bad MIME  user=%s  filename=%r  content_type=%s",
+                       ctx.user.id, safe_filename, content_type)
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
 
     # Enforce file size limit BEFORE reading the entire payload into memory
     file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
+    file_size = len(file_bytes)
+    logger.debug("[resumes] upload bytes read  user=%s  filename=%r  size=%d", ctx.user.id, safe_filename, file_size)
+    if file_size > MAX_UPLOAD_BYTES:
+        logger.warning("[resumes] upload 413 file too large  user=%s  filename=%r  size=%d",
+                       ctx.user.id, safe_filename, file_size)
         raise HTTPException(status_code=413, detail="File too large. Maximum size is 10 MB.")
 
     # Validate magic bytes — prevents disguised file uploads (TD-07)
     if not _check_magic_bytes(file_bytes, ext):
+        logger.warning("[resumes] upload 400 magic bytes mismatch  user=%s  filename=%r  ext=%r  first4=%r",
+                       ctx.user.id, safe_filename, ext, file_bytes[:4])
         raise HTTPException(
             status_code=400,
             detail=f"File content does not match the declared extension (.{ext}). Upload a real PDF or DOCX file."
@@ -109,25 +126,49 @@ async def upload_resume(
     # Extract text
     try:
         extracted = extract_text(file_bytes, safe_filename)
+        logger.info("[resumes] upload text extracted  user=%s  filename=%r  chars=%d",
+                    ctx.user.id, safe_filename, len(extracted))
     except Exception as e:
+        logger.error("[resumes] upload 422 text extraction failed  user=%s  filename=%r  error=%s",
+                     ctx.user.id, safe_filename, e)
         raise HTTPException(status_code=422, detail=f"Could not read file: {str(e)}")
 
     # Upload to Supabase Storage — uuid in path prevents collisions; safe_filename strips traversal
     storage_path = f"{ctx.user.id}/{uuid.uuid4()}/{safe_filename}"
-    admin.storage.from_(RESUME_BUCKET).upload(
-        path=storage_path,
-        file=file_bytes,
-        file_options={"content-type": content_type or "application/octet-stream"}
-    )
+    logger.info("[resumes] upload → storage  user=%s  path=%s  bytes=%d", ctx.user.id, storage_path, file_size)
+    try:
+        admin.storage.from_(RESUME_BUCKET).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": content_type or "application/octet-stream"}
+        )
+        logger.info("[resumes] upload storage OK  user=%s  path=%s", ctx.user.id, storage_path)
+    except Exception as e:
+        logger.error("[resumes] upload 500 storage FAILED  user=%s  filename=%r  path=%s  error=%s",
+                     ctx.user.id, safe_filename, storage_path, e)
+        raise HTTPException(status_code=500, detail="Failed to store file. Please try again.")
 
-    # Save metadata to DB — use admin client since storage returns service-level metadata
-    admin.table("resume_files").insert({
-        "user_id": str(ctx.user.id),
-        "filename": safe_filename,
-        "file_path": storage_path,
-        "file_type": ext,
-        "extracted_text": extracted
-    }).execute()
+    # Save metadata to DB — use admin client since storage returns service-level metadata.
+    # If the insert fails, remove the already-uploaded storage file to avoid orphaning it.
+    try:
+        admin.table("resume_files").insert({
+            "user_id": str(ctx.user.id),
+            "filename": safe_filename,
+            "file_path": storage_path,
+            "file_type": ext,
+            "extracted_text": extracted
+        }).execute()
+    except Exception as e:
+        logger.error("[resumes] upload DB insert FAILED — removing orphaned storage file  user=%s  path=%s  error=%s",
+                     ctx.user.id, storage_path, e)
+        try:
+            admin.storage.from_(RESUME_BUCKET).remove([storage_path])
+        except Exception as cleanup_err:
+            logger.warning("[resumes] upload orphan cleanup also FAILED  user=%s  path=%s  error=%s",
+                           ctx.user.id, storage_path, cleanup_err)
+        raise HTTPException(status_code=500, detail="Failed to save file metadata. Please try again.")
+    logger.info("[resumes] upload COMPLETE  user=%s  filename=%r  ext=%s  chars=%d",
+                ctx.user.id, safe_filename, ext, len(extracted))
 
     return {"message": f"'{safe_filename}' uploaded successfully", "extracted_length": len(extracted)}
 
@@ -135,22 +176,33 @@ async def upload_resume(
 @router.delete("/{file_id}")
 def delete_resume(file_id: str, ctx: AuthContext = Depends(require_user)):
     """Delete a resume file."""
+    logger.info("[resumes] delete START  user=%s  file_id=%s", ctx.user.id, file_id)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
     # Confirm ownership via RLS-respecting client
-    result = db.table("resume_files").select("file_path").eq("id", file_id).eq("user_id", str(ctx.user.id)).execute()
+    result = db.table("resume_files").select("file_path, filename").eq("id", file_id).eq("user_id", str(ctx.user.id)).execute()
     if not result.data:
+        logger.warning("[resumes] delete 404  user=%s  file_id=%s", ctx.user.id, file_id)
         raise HTTPException(status_code=404, detail="File not found")
 
     file_path = result.data[0]["file_path"]
+    filename   = result.data[0].get("filename", "unknown")
+    logger.info("[resumes] delete found  user=%s  file_id=%s  filename=%r  path=%s",
+                ctx.user.id, file_id, filename, file_path)
 
-    # Delete from storage — log failure but continue so DB record is always cleaned up
+    # Delete DB record first — if storage delete fails, the record is gone
+    # (file orphaned in storage) but the user can't see it. Safer than deleting
+    # storage first and leaving an orphaned DB record.
+    admin.table("resume_files").delete().eq("id", file_id).execute()
+    logger.info("[resumes] delete DB record removed  user=%s  file_id=%s", ctx.user.id, file_id)
+
+    # Delete from storage — log failure but don't surface it to the user
     try:
         admin.storage.from_(RESUME_BUCKET).remove([file_path])
+        logger.info("[resumes] delete storage removed  user=%s  path=%s", ctx.user.id, file_path)
     except Exception as e:
-        logger.warning("Storage delete failed for path=%s: %s", file_path, e)
+        logger.warning("[resumes] delete storage FAILED (file orphaned in bucket)  user=%s  path=%s  error=%s",
+                       ctx.user.id, file_path, e)
 
-    # Delete from DB
-    admin.table("resume_files").delete().eq("id", file_id).execute()
     return {"message": "File deleted"}
