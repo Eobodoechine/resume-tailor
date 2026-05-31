@@ -49,13 +49,43 @@ def client(test_app):
 
 
 @pytest.fixture(autouse=True)
-def reset_supabase_mocks():
-    supa = sys.modules["services.supabase_client"]
+def reset_supabase_mocks(monkeypatch):
+    # Routes import get_client/get_admin_client BY NAME, so patch the source AND
+    # every route module; monkeypatch auto-reverts (keeps test_supabase_client real).
+    from routes import auth, admin, profile, resumes, master, tailor  # noqa: F401
+
     db = MagicMock()
-    supa.get_client.return_value = db
-    admin = MagicMock()
-    supa.get_admin_client.return_value = admin
-    yield db, admin
+    admin_client = MagicMock()
+    anon_client = MagicMock()
+
+    _targets = [
+        "services.supabase_client",
+        "routes.auth", "routes.admin", "routes.profile",
+        "routes.resumes", "routes.master", "routes.tailor",
+    ]
+    for _name in _targets:
+        _mod = sys.modules.get(_name)
+        if _mod is None:
+            continue
+        if hasattr(_mod, "get_client"):
+            monkeypatch.setattr(_mod, "get_client", MagicMock(return_value=db), raising=False)
+        if hasattr(_mod, "get_admin_client"):
+            monkeypatch.setattr(_mod, "get_admin_client", MagicMock(return_value=admin_client), raising=False)
+        if hasattr(_mod, "get_anon_client"):
+            monkeypatch.setattr(_mod, "get_anon_client", MagicMock(return_value=anon_client), raising=False)
+
+    # Fresh, well-formed ai_client at the route binding (see test_http_layer note).
+    # These tests set `ai_client.messages.create.return_value.content`; usage.* must
+    # be ints for the route's `output_tokens >= 3000` truncation check.
+    if sys.modules.get("routes.tailor") is not None:
+        _m = MagicMock()
+        _resp = _m.messages.create.return_value
+        _resp.content = [MagicMock(text="")]
+        _resp.usage.input_tokens = 0
+        _resp.usage.output_tokens = 0
+        monkeypatch.setattr(sys.modules["routes.tailor"], "ai_client", _m, raising=False)
+
+    yield db, admin_client
 
 
 # ── _safe_filename_part ───────────────────────────────────────────────────────

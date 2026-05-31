@@ -18,11 +18,12 @@ router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
 MAX_FILES_PER_USER = 100              # generous cap — prevents unbounded storage growth
 
-# Allowed MIME types for resume files
+# Allowed MIME types for resume files.
+# Legacy .doc (application/msword) is intentionally excluded — python-docx cannot
+# read OLE2 .doc files, so they are rejected up front with a clear message (B4).
 ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/msword",
 }
 
 # Magic bytes for file type validation (TD-07)
@@ -33,16 +34,15 @@ _DOCX_MAGIC = b"PK\x03\x04"   # ZIP/OOXML container (DOCX, XLSX, PPTX)
 
 
 def _check_magic_bytes(data: bytes, ext: str) -> bool:
-    """Return True if the file's leading bytes match the declared extension."""
+    """Return True if the file's leading bytes match the declared extension.
+
+    Only pdf and docx are supported. Legacy .doc (OLE2) is rejected earlier at
+    the extension check (B4), so it never reaches here.
+    """
     if ext == "pdf":
         return data[:4] == _PDF_MAGIC
-    elif ext in ("docx", "doc"):
-        # .doc (legacy) is OLE2 compound; DOCX is ZIP. We accept both but
-        # check DOCX magic — legacy .doc is rare and may not have consistent
-        # magic across all versions, so we allow it through on ext alone.
-        if ext == "docx":
-            return data[:4] == _DOCX_MAGIC
-        return True  # .doc — trust the extension, OLE2 magic varies
+    elif ext == "docx":
+        return data[:4] == _DOCX_MAGIC
     return False
 
 
@@ -93,10 +93,16 @@ async def upload_resume(
 
     # Validate file extension
     ext = safe_filename.lower().rsplit(".", 1)[-1] if "." in safe_filename else ""
-    if ext not in ("pdf", "docx", "doc"):
+    if ext not in ("pdf", "docx"):
+        # Legacy .doc is rejected here (B4): python-docx can't parse OLE2 .doc,
+        # so accepting it would only fail later at extraction with a vague error.
         logger.warning("[resumes] upload 400 bad extension  user=%s  filename=%r  ext=%r",
                        ctx.user.id, safe_filename, ext)
-        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
+        detail = (
+            "Legacy .doc files aren't supported — please save as .docx or PDF and re-upload."
+            if ext == "doc" else "Only PDF and DOCX files are supported"
+        )
+        raise HTTPException(status_code=400, detail=detail)
 
     # Validate MIME type (defense-in-depth alongside extension check)
     content_type = file.content_type or ""
@@ -131,7 +137,7 @@ async def upload_resume(
     except Exception as e:
         logger.error("[resumes] upload 422 text extraction failed  user=%s  filename=%r  error=%s",
                      ctx.user.id, safe_filename, e)
-        raise HTTPException(status_code=422, detail=f"Could not read file: {str(e)}")
+        raise HTTPException(status_code=422, detail="Could not read the file. Make sure it's a valid PDF or DOCX.")
 
     # Upload to Supabase Storage — uuid in path prevents collisions; safe_filename strips traversal
     storage_path = f"{ctx.user.id}/{uuid.uuid4()}/{safe_filename}"

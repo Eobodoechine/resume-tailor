@@ -93,20 +93,65 @@ def unauthed_client(test_app):
 
 
 @pytest.fixture(autouse=True)
-def reset_supabase_mocks():
+def reset_supabase_mocks(monkeypatch):
     """
-    Re-create clean Supabase mock return values before each test so that
-    one test's configuration doesn't leak into the next.
+    Wire Supabase access to fresh mocks before each test.
+
+    Route modules import these helpers BY NAME (`from services.supabase_client
+    import get_admin_client`), so patching only the source module would never
+    reach the route's already-bound reference. We patch the source AND every
+    route module. monkeypatch auto-reverts after each test, so the REAL module is
+    restored for tests that need it (e.g. test_supabase_client.py).
     """
-    supa = sys.modules["services.supabase_client"]
+    # Ensure route modules are imported so their bound names exist to patch.
+    from routes import auth, admin, profile, resumes, master, tailor  # noqa: F401
 
     db = MagicMock()
-    supa.get_client.return_value = db
+    admin_client = MagicMock()
+    anon_client = MagicMock()
 
-    admin = MagicMock()
-    supa.get_admin_client.return_value = admin
+    _targets = [
+        "services.supabase_client",
+        "routes.auth", "routes.admin", "routes.profile",
+        "routes.resumes", "routes.master", "routes.tailor",
+    ]
+    for _name in _targets:
+        _mod = sys.modules.get(_name)
+        if _mod is None:
+            continue
+        if hasattr(_mod, "get_client"):
+            monkeypatch.setattr(_mod, "get_client", MagicMock(return_value=db), raising=False)
+        if hasattr(_mod, "get_admin_client"):
+            monkeypatch.setattr(_mod, "get_admin_client", MagicMock(return_value=admin_client), raising=False)
+        if hasattr(_mod, "get_anon_client"):
+            monkeypatch.setattr(_mod, "get_anon_client", MagicMock(return_value=anon_client), raising=False)
 
-    yield db, admin
+    # routes bind `ai_client = claude_service.client` and `extract_text` BY NAME at
+    # import, capturing whatever services.claude/extractor were at that moment. Give
+    # the route bindings fresh, well-formed mocks each test. usage.* must be ints so
+    # the route's `response.usage.output_tokens >= 3000` truncation check works
+    # (tests that only set `.content` relied on the module 500-ing before this ran).
+    def _fresh_ai_client():
+        m = MagicMock()
+        resp = m.messages.create.return_value
+        resp.content = [MagicMock(text="")]
+        resp.usage.input_tokens = 0
+        resp.usage.output_tokens = 0
+        return m
+    # Also repoint `claude_service` (bound by name at import) at the conftest
+    # stub the tests configure via sys.modules["services.claude"], e.g.
+    # `claude.tailor_resume.return_value = ...`.
+    _claude_stub = sys.modules.get("services.claude")
+    for _rmod in ("routes.tailor", "routes.master"):
+        if sys.modules.get(_rmod) is not None:
+            monkeypatch.setattr(sys.modules[_rmod], "ai_client", _fresh_ai_client(), raising=False)
+            if _claude_stub is not None:
+                monkeypatch.setattr(sys.modules[_rmod], "claude_service", _claude_stub, raising=False)
+    if sys.modules.get("routes.resumes") is not None:
+        monkeypatch.setattr(sys.modules["routes.resumes"], "extract_text",
+                            MagicMock(return_value="extracted resume text"), raising=False)
+
+    yield db, admin_client
 
 
 # ── Auth endpoint tests ───────────────────────────────────────────────────────

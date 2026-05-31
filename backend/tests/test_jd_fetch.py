@@ -36,25 +36,49 @@ class TestValidateFetchUrl:
             self._validate("http://metadata.google.internal/computeMetadata/v1/")
         assert exc.value.status_code == 400
 
+    @staticmethod
+    def _addrinfo(*ips):
+        """Build a socket.getaddrinfo()-style return value for the given IPs.
+        Each entry: (family, type, proto, canonname, sockaddr) with sockaddr=(ip, port)."""
+        return [(2, 1, 6, "", (ip, 0)) for ip in ips]
+
     def test_rejects_private_ip(self):
-        with patch("routes.tailor.socket.gethostbyname", return_value="192.168.1.1"):
+        with patch("routes.tailor.socket.getaddrinfo", return_value=self._addrinfo("192.168.1.1")):
             with pytest.raises(HTTPException) as exc:
                 self._validate("http://internal.company.com/jobs")
             assert exc.value.status_code == 400
 
     def test_rejects_loopback_ip(self):
-        with patch("routes.tailor.socket.gethostbyname", return_value="127.0.0.1"):
+        with patch("routes.tailor.socket.getaddrinfo", return_value=self._addrinfo("127.0.0.1")):
             with pytest.raises(HTTPException) as exc:
                 self._validate("http://something.internal/jobs")
             assert exc.value.status_code == 400
 
+    def test_rejects_when_any_resolved_ip_is_private(self):
+        """A host that resolves to a public AND a private address must be blocked
+        — the getaddrinfo 'validate every address' hardening (was bypassable when
+        only the first gethostbyname() IPv4 was checked)."""
+        with patch("routes.tailor.socket.getaddrinfo",
+                   return_value=self._addrinfo("13.33.44.55", "10.0.0.5")):
+            with pytest.raises(HTTPException) as exc:
+                self._validate("http://rebind.example.com/jobs")
+            assert exc.value.status_code == 400
+
+    def test_rejects_private_ipv6(self):
+        """Unique-local IPv6 (fc00::/7) must also be blocked."""
+        with patch("routes.tailor.socket.getaddrinfo",
+                   return_value=[(10, 1, 6, "", ("fd00::1", 0, 0, 0))]):
+            with pytest.raises(HTTPException) as exc:
+                self._validate("http://v6.internal/jobs")
+            assert exc.value.status_code == 400
+
     def test_accepts_valid_public_url(self):
-        with patch("routes.tailor.socket.gethostbyname", return_value="13.33.44.55"):
+        with patch("routes.tailor.socket.getaddrinfo", return_value=self._addrinfo("13.33.44.55")):
             # Should not raise
             self._validate("https://jobs.greenhouse.io/somecompany/12345")
 
     def test_accepts_https_lever(self):
-        with patch("routes.tailor.socket.gethostbyname", return_value="104.26.10.78"):
+        with patch("routes.tailor.socket.getaddrinfo", return_value=self._addrinfo("104.26.10.78")):
             self._validate("https://jobs.lever.co/somecompany/abc-123")
 
 

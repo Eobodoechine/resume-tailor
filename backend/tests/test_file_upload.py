@@ -32,10 +32,10 @@ class TestMagicBytes:
     def test_invalid_docx_magic_pdf_header(self):
         assert self._check(b"%PDF-1.4\nfake content", "docx") is False
 
-    # .doc legacy — trusted on extension alone
-    def test_doc_extension_passes_regardless(self):
-        # .doc files have variable OLE2 magic; we trust the extension
-        assert self._check(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", "doc") is True
+    # .doc legacy — unsupported (B4): python-docx can't read OLE2 .doc, so it's
+    # rejected (the upload route blocks the .doc extension up front).
+    def test_doc_extension_rejected(self):
+        assert self._check(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", "doc") is False
 
     # Edge cases
     def test_empty_file_pdf_fails(self):

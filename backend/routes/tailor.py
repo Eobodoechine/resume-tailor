@@ -22,12 +22,14 @@ import httpx
 import anthropic
 from html.parser import HTMLParser
 from urllib.parse import urlparse
+from fastapi.responses import HTMLResponse
 from dependencies.auth import require_user, AuthContext
 from services.supabase_client import get_client, get_admin_client
 from services import claude as claude_service
 from services.resume_parser import text_to_resume_data
 from renderers.registry import get_renderer
-from config import CLAUDE_MODEL
+from renderers.fde_html import FDEHtmlRenderer
+from config import CLAUDE_MODEL, RESUME_PDF_ENGINE
 from limiter import limiter
 
 router = APIRouter(prefix="/api/tailor", tags=["tailor"])
@@ -214,7 +216,7 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         logger.error("[tailor] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     # Use admin client for the insert — RLS insert policy may require service role
     insert_result = admin.table("tailored_resumes").insert({
@@ -237,8 +239,28 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
     }
 
 
+def _is_blocked_ip(ip_str: str) -> bool:
+    """True if the address is internal (private/loopback/link-local/reserved/etc.).
+    Raises ValueError if ip_str isn't a valid IP."""
+    ip = ipaddress.ip_address(ip_str)
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_unspecified or ip.is_multicast
+    )
+
+
 def _validate_fetch_url(url: str):
-    """Block SSRF: reject non-http(s) schemes, private IPs, and loopback addresses."""
+    """Block SSRF: reject non-http(s) schemes, internal hostnames, and any host
+    that resolves to an internal address.
+
+    Uses socket.getaddrinfo() and validates EVERY resolved address (all A/AAAA
+    records, IPv4 + IPv6) — not just the first IPv4 from gethostbyname(), which a
+    host with an extra private record or an IPv6 address could slip past.
+    NOTE: a fully DNS-rebinding-proof fix would pin the validated IP into the
+    httpx connection via a custom transport; combined with fetch_jd's
+    post-redirect re-check, validating every resolved address closes the
+    practical bypasses.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
@@ -249,15 +271,23 @@ def _validate_fetch_url(url: str):
     blocked_hosts = {"localhost", "metadata.google.internal"}
     if hostname.lower() in blocked_hosts:
         raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
-    # Resolve and block private/loopback IP ranges
+    # Resolve ALL addresses; reject if ANY is internal.
     try:
-        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
-    except HTTPException:
-        raise
+        infos = socket.getaddrinfo(hostname, None)
     except Exception:
-        pass  # DNS failure will be caught by httpx below
+        # DNS failure — let httpx surface a clean fetch error downstream.
+        logger.info("[fetch-jd] DNS resolution failed  host=%r — deferring to httpx", hostname)
+        return
+    resolved = sorted({info[4][0] for info in infos})
+    logger.info("[fetch-jd] SSRF check  host=%r  resolved=%s", hostname, resolved)
+    for ip_str in resolved:
+        try:
+            blocked = _is_blocked_ip(ip_str)
+        except ValueError:
+            continue  # unparseable address — skip
+        if blocked:
+            logger.warning("[fetch-jd] blocked internal address  host=%r  ip=%s", hostname, ip_str)
+            raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
 
 
 _BROWSER_UA = (
@@ -347,7 +377,7 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
         raise HTTPException(status_code=400, detail=f"The site returned an error ({http_status}). Try pasting the text directly.")
     except Exception as e:
         logger.error("[fetch-jd] 400 unexpected error  user=%s  url=%r  error=%s", ctx.user.id, body.url, e)
-        raise HTTPException(status_code=400, detail=f"Could not fetch URL: {str(e)}")
+        raise HTTPException(status_code=400, detail="Couldn't fetch that URL. Try pasting the job description text instead.")
 
 
 @router.post("/stream")
@@ -641,7 +671,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         logger.error("[refine] 502 Claude error  user=%s  record_id=%s  error=%s", ctx.user.id, record_id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     reply = response.content[0].text
 
@@ -711,6 +741,116 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
     }
 
 
+async def _fetch_record_and_profile(
+    record_id: uuid.UUID,
+    ctx: AuthContext,
+    db,
+):
+    """
+    Shared helper: fetch tailored_resumes record + profile for a given record_id.
+    Returns (record, profile) or raises HTTPException.
+    """
+    try:
+        result = await asyncio.to_thread(
+            lambda: db.table("tailored_resumes")
+                .select("*")
+                .eq("id", str(record_id))
+                .eq("user_id", str(ctx.user.id))
+                .execute()
+        )
+        logger.info(
+            "[tailor] DB query returned %d row(s)  record_id=%s  user=%s",
+            len(result.data), record_id, ctx.user.id,
+        )
+    except Exception as e:
+        logger.error(
+            "[tailor] DB query FAILED  record_id=%s  user=%s  error=%s\n%s",
+            record_id, ctx.user.id, e, traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail="A database error occurred. Please try again.")
+
+    if not result.data:
+        logger.warning(
+            "[tailor] 404 record not found  record_id=%s  user=%s",
+            record_id, ctx.user.id,
+        )
+        raise HTTPException(status_code=404, detail="Tailored resume not found")
+
+    record = result.data[0]
+
+    try:
+        profile_result = await asyncio.to_thread(
+            lambda: db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
+        )
+        profile = profile_result.data[0] if profile_result.data else {}
+    except Exception as e:
+        logger.error(
+            "[tailor] profile fetch FAILED (continuing with empty profile)  user=%s  error=%s\n%s",
+            ctx.user.id, e, traceback.format_exc(),
+        )
+        profile = {}
+
+    return record, profile
+
+
+@router.get("/{record_id}/preview")
+@limiter.limit("60/minute")
+async def preview_html(
+    request: Request,
+    record_id: uuid.UUID,
+    ctx: AuthContext = Depends(require_user),
+):
+    """
+    Return the tailored resume as HTML for the iframe preview.
+
+    Only meaningful when RESUME_PDF_ENGINE=playwright — the HTML is the
+    single source of truth for both the iframe and the downloaded PDF, so
+    what you see in the preview is pixel-identical to the download.
+
+    When RESUME_PDF_ENGINE=libreoffice, returns a 501 so the frontend can
+    fall back to the existing PDF blob preview path.
+    """
+    logger.info(
+        "[preview_html] START  record_id=%s  user=%s  engine=%s",
+        record_id, ctx.user.id, RESUME_PDF_ENGINE,
+    )
+
+    if RESUME_PDF_ENGINE != "playwright":
+        raise HTTPException(
+            status_code=501,
+            detail="HTML preview is only available when RESUME_PDF_ENGINE=playwright",
+        )
+
+    db = get_client(ctx.token)
+    record, profile = await _fetch_record_and_profile(record_id, ctx, db)
+
+    try:
+        resume_data = await asyncio.to_thread(
+            text_to_resume_data, record["tailored_content"], profile
+        )
+    except Exception as e:
+        logger.error(
+            "[preview_html] parse FAILED  record_id=%s  user=%s  error=%s\n%s",
+            record_id, ctx.user.id, e, traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail="Could not process the resume. Please try again.")
+
+    try:
+        html = await asyncio.to_thread(FDEHtmlRenderer().render_html, resume_data)
+    except Exception as e:
+        logger.error(
+            "[preview_html] render_html FAILED  record_id=%s  user=%s  error=%s\n%s",
+            record_id, ctx.user.id, e, traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail="Could not render the resume. Please try again.")
+
+    logger.info(
+        "[preview_html] COMPLETE  record_id=%s  user=%s  html_len=%d",
+        record_id, ctx.user.id, len(html),
+    )
+    return HTMLResponse(content=html)
+
+
 @router.api_route("/{record_id}/pdf", methods=["GET", "HEAD"])
 @router.api_route("/{record_id}/pdf/{filename}", methods=["GET", "HEAD"])
 @limiter.limit("60/minute")
@@ -723,85 +863,90 @@ async def download_pdf(
     """Generate and return a PDF for a tailored resume record.
 
     Accepts both GET and HEAD.  The frontend sends HEAD first to validate auth
-    and reachability without triggering LibreOffice, then fires a direct anchor
-    click for the real GET.  This avoids Chrome's ~5-second user-activation
-    window that caused blob-URL downloads to save with UUID filenames.
+    and reachability without triggering the renderer, then fires a direct
+    anchor click for the real GET.
 
-    Renders via the FDE DOCX renderer (LibreOffice headless → PDF).
-    Rate-limited because LibreOffice is CPU-heavy and a single user could
-    otherwise spike the Render free instance by hammering this endpoint.
+    Engine selection via RESUME_PDF_ENGINE env var:
+      "libreoffice" (default) — DOCX template → LibreOffice → PDF
+      "playwright"            — HTML/CSS template → Playwright Chrome → PDF
+    Both engines are rate-limited and serialised via _pdf_semaphore because
+    LibreOffice and headless Chrome are both CPU-heavy.
     """
-    logger.info(f"[download_pdf] START  method={request.method}  record_id={record_id}  user={ctx.user.id}")
+    logger.info(
+        "[download_pdf] START  method=%s  record_id=%s  user=%s  engine=%s",
+        request.method, record_id, ctx.user.id, RESUME_PDF_ENGINE,
+    )
 
-    logger.info(f"[download_pdf] querying tailored_resumes for record_id={record_id}")
-    try:
-        db = get_client(ctx.token)
-        result = await asyncio.to_thread(
-            lambda: db.table("tailored_resumes")
-                .select("*")
-                .eq("id", str(record_id))
-                .eq("user_id", str(ctx.user.id))
-                .execute()
-        )
-        logger.info(f"[download_pdf] DB query returned {len(result.data)} row(s)")
-    except Exception as e:
-        logger.error(f"[download_pdf] DB query FAILED: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    db = get_client(ctx.token)
+    record, profile = await _fetch_record_and_profile(record_id, ctx, db)
 
-    if not result.data:
-        logger.warning(f"[download_pdf] 404 — no record found for record_id={record_id} user={ctx.user.id}")
-        raise HTTPException(status_code=404, detail="Tailored resume not found")
+    logger.info(
+        "[download_pdf] record found  company=%r  job_title=%r",
+        record.get("company"), record.get("job_title"),
+    )
 
-    record = result.data[0]
-    logger.info(f"[download_pdf] record found: company={record.get('company')!r}  job_title={record.get('job_title')!r}")
+    company  = _safe_filename_part(record.get("company", ""), "tailored")
+    role     = _safe_filename_part(record.get("job_title", ""), "resume")
+    pdf_name = f"{company}_{role}.pdf"
+    disposition = f'attachment; filename="{pdf_name}"'
+    logger.info("[download_pdf] filename resolved to: %s", pdf_name)
 
-    company = _safe_filename_part(record.get("company", ""), "tailored")
-    role = _safe_filename_part(record.get("job_title", ""), "resume")
-    filename = f"{company}_{role}.pdf"
-    disposition = f"attachment; filename=\"{filename}\""
-    logger.info(f"[download_pdf] filename resolved to: {filename}")
-
-    # HEAD: validate ownership + return headers only — skip LibreOffice.
+    # HEAD: validate ownership + return headers without running the renderer.
     if request.method == "HEAD":
-        logger.info(f"[download_pdf] HEAD — returning 200 with headers only")
+        logger.info("[download_pdf] HEAD — returning 200 with headers only")
         return Response(
             content=b"",
             media_type="application/pdf",
             headers={"Content-Disposition": disposition},
         )
 
-    logger.info(f"[download_pdf] GET — fetching profile for user={ctx.user.id}")
-    try:
-        profile_result = await asyncio.to_thread(
-            lambda: db.table("profiles").select("*").eq("id", str(ctx.user.id)).execute()
-        )
-        profile = profile_result.data[0] if profile_result.data else {}
-        logger.info(f"[download_pdf] profile fetched: has_data={bool(profile_result.data)}")
-    except Exception as e:
-        logger.error(f"[download_pdf] profile fetch FAILED: {e}\n{traceback.format_exc()}")
-        profile = {}
-
-    logger.info(f"[download_pdf] parsing tailored_content into resume_data")
+    # Parse plain-text resume into structured data for the renderer.
+    logger.info("[download_pdf] parsing tailored_content into resume_data")
     try:
         resume_data = await asyncio.to_thread(
             text_to_resume_data, record["tailored_content"], profile
         )
-        logger.info(f"[download_pdf] resume_data parsed OK")
+        logger.info("[download_pdf] resume_data parsed OK")
     except Exception as e:
-        logger.error(f"[download_pdf] text_to_resume_data FAILED: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Resume parse failed: {str(e)}")
+        logger.error(
+            "[download_pdf] text_to_resume_data FAILED  record_id=%s  error=%s\n%s",
+            record_id, e, traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail="Could not process the resume. Please try again.")
 
-    logger.info(f"[download_pdf] calling renderer (LibreOffice) — acquiring semaphore")
+    # Render PDF — path branches on RESUME_PDF_ENGINE.
+    logger.info("[download_pdf] acquiring semaphore  engine=%s", RESUME_PDF_ENGINE)
     try:
         async with _pdf_semaphore:
-            logger.info(f"[download_pdf] semaphore acquired — starting LibreOffice")
-            pdf_bytes = await asyncio.to_thread(get_renderer().render, resume_data)
-        logger.info(f"[download_pdf] renderer returned {len(pdf_bytes)} bytes")
-    except Exception as e:
-        logger.error(f"[download_pdf] renderer FAILED: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+            logger.info("[download_pdf] semaphore acquired — starting renderer")
 
-    logger.info(f"[download_pdf] returning PDF response  filename={filename}  size={len(pdf_bytes)}")
+            if RESUME_PDF_ENGINE == "playwright":
+                # Playwright path: render HTML then print to PDF directly (async).
+                from renderers.playwright_pdf import html_to_pdf
+                html = await asyncio.to_thread(FDEHtmlRenderer().render_html, resume_data)
+                logger.info(
+                    "[download_pdf] HTML rendered  html_len=%d", len(html)
+                )
+                pdf_bytes = await html_to_pdf(html)
+            else:
+                # LibreOffice path (default): DOCX template → LibreOffice → PDF.
+                pdf_bytes = await asyncio.to_thread(get_renderer().render, resume_data)
+
+        logger.info(
+            "[download_pdf] renderer returned %d bytes  engine=%s",
+            len(pdf_bytes), RESUME_PDF_ENGINE,
+        )
+    except Exception as e:
+        logger.error(
+            "[download_pdf] renderer FAILED  engine=%s  record_id=%s  error=%s\n%s",
+            RESUME_PDF_ENGINE, record_id, e, traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail="Could not generate the PDF. Please try again.")
+
+    logger.info(
+        "[download_pdf] returning PDF  filename=%s  size=%d  engine=%s",
+        pdf_name, len(pdf_bytes), RESUME_PDF_ENGINE,
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

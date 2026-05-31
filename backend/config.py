@@ -31,6 +31,13 @@ CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 RESUME_BUCKET      = os.getenv("RESUME_BUCKET", "resume-sources")
 PDF_BUCKET         = os.getenv("PDF_BUCKET", "tailored-pdfs")
 
+# PDF rendering engine.
+#   "libreoffice" — DOCX template → LibreOffice headless → PDF (current default)
+#   "playwright"  — HTML/CSS template → Playwright headless Chrome → PDF (new)
+# Default is "libreoffice" so production behaviour doesn't change on deploy.
+# Switch to "playwright" after validating output locally and on Render staging.
+RESUME_PDF_ENGINE  = os.getenv("RESUME_PDF_ENGINE", "libreoffice")
+
 # Cookie settings — shared by auth routes and the sliding-session middleware.
 # Set ENV=development in your local .env to allow plain-http cookies in dev.
 COOKIE_SECURE  = os.getenv("ENV", "production") == "production"
