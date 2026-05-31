@@ -72,7 +72,8 @@ def _load_font_b64(filename: str) -> Optional[str]:
     except OSError as e:
         logger.warning(
             "[fde_html] font file not found — will fall back to system fonts  "
-            "path=%s  error=%s", path, e
+            "path=%s  error=%s",
+            path, e, exc_info=True,
         )
         return None
 
