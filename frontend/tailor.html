@@ -399,11 +399,27 @@
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
       <div>
         <h2 style="font-size:17px;font-weight:700;color:var(--navy);margin-bottom:3px;">Your Tailored Resume</h2>
-        <p style="font-size:12px;color:var(--muted);">Saved to history. Download the PDF for the formatted two-column version.</p>
+        <p style="font-size:12px;color:var(--muted);" id="result-subtitle">Saved to history. Download the PDF for the formatted two-column version.</p>
       </div>
       <button id="btn-download" onclick="downloadPDF()">
         ↓ Download PDF
       </button>
+    </div>
+
+    <!-- HTML preview iframe — shown only when RESUME_PDF_ENGINE=playwright.
+         When active, the iframe renders the same HTML that will be printed to
+         PDF, so what you see here is pixel-identical to the downloaded file. -->
+    <div id="preview-panel" style="display:none;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <p style="font-size:12px;font-weight:600;color:var(--navy);">
+          Formatted Preview <span style="font-weight:400;color:var(--green);font-size:11px;">● Live — matches the PDF exactly</span>
+        </p>
+        <button style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--light);cursor:pointer;" onclick="togglePreview()">Hide</button>
+      </div>
+      <iframe id="resume-preview-frame"
+        style="width:100%;height:11in;border:1px solid var(--border);border-radius:6px;background:white;"
+        title="Resume preview">
+      </iframe>
     </div>
 
     <div id="result-text"></div>
@@ -568,6 +584,8 @@
               currentRecordId = evt.id;
               setStep(3);
               startRefineChat();
+              // Try to load the HTML preview (only works when RESUME_PDF_ENGINE=playwright)
+              loadPreview(evt.id);
             }
           }
         }
@@ -581,6 +599,49 @@
       btn.disabled = false;
       btn.innerHTML = "Generate Tailored Resume";
     }
+  }
+
+  // ── HTML preview (Playwright engine only) ─────────────────────────────────
+  // Probe the /preview endpoint after generation. If it returns 200, the
+  // server is using RESUME_PDF_ENGINE=playwright — show the iframe so the
+  // user sees the formatted resume that is pixel-identical to the PDF download.
+  // If it returns 501 (engine is libreoffice), silently hide the panel.
+
+  let _previewVisible = true;
+
+  async function loadPreview(recordId) {
+    const panel = document.getElementById("preview-panel");
+    const frame = document.getElementById("resume-preview-frame");
+    const subtitle = document.getElementById("result-subtitle");
+
+    try {
+      const probe = await fetch(`/api/tailor/${recordId}/preview`, {
+        method: "HEAD",
+        credentials: "include",
+      });
+      if (!probe.ok) {
+        // 501 = libreoffice engine active — preview not available
+        panel.style.display = "none";
+        return;
+      }
+    } catch (_) {
+      panel.style.display = "none";
+      return;
+    }
+
+    // Preview endpoint is live — load the iframe and update subtitle
+    frame.src = `/api/tailor/${recordId}/preview`;
+    panel.style.display = "block";
+    subtitle.textContent = "Saved to history. The preview below matches the PDF exactly.";
+  }
+
+  function togglePreview() {
+    const panel = document.getElementById("preview-panel");
+    const frame = document.getElementById("resume-preview-frame");
+    const btn = panel.querySelector("button");
+    _previewVisible = !_previewVisible;
+    frame.style.display = _previewVisible ? "block" : "none";
+    btn.textContent = _previewVisible ? "Hide" : "Show";
   }
 
   // ── Refinement chat ────────────────────────────────────────────────────────
