@@ -91,7 +91,15 @@
       const tbody = document.getElementById("requests-body");
 
       if (!data.length) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">No ${filter} requests</td></tr>`;
+        // Build via DOM + textContent so `filter` can never inject markup (F2).
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 6;
+        td.style.cssText = "text-align:center;color:var(--muted);padding:20px";
+        td.textContent = "No " + filter + " requests";
+        tr.appendChild(td);
+        tbody.innerHTML = "";
+        tbody.appendChild(tr);
         return;
       }
 

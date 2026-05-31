@@ -81,8 +81,13 @@
       }
     } catch (e) {
       if (e && e.redirecting) return;
-      document.getElementById("master-alert").innerHTML = `
-        <div class="alert alert-error">Couldn't load your master resume: ${e.message}</div>`;
+      // Build via DOM + textContent so e.message can never inject markup (F2).
+      const alertBox = document.getElementById("master-alert");
+      alertBox.innerHTML = "";
+      const errDiv = document.createElement("div");
+      errDiv.className = "alert alert-error";
+      errDiv.textContent = "Couldn't load your master resume: " + ((e && e.message) || "unknown error");
+      alertBox.appendChild(errDiv);
       document.getElementById("btn-send").disabled = true;
     }
   }

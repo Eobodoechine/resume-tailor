@@ -647,11 +647,15 @@
   // ── Refinement chat ────────────────────────────────────────────────────────
 
   function renderMarkdown(text) {
-    if (typeof marked !== "undefined") {
+    // Markdown rendering requires BOTH marked (parse) and DOMPurify (sanitize).
+    // If either is missing (e.g. CDN outage) we must NOT inject raw HTML — fall
+    // back to escaped plain text instead (F1). Claude replies are trusted-ish,
+    // but a prompt-injected JD could seed markup, so never bypass sanitization.
+    if (typeof marked !== "undefined" && typeof DOMPurify !== "undefined") {
       const raw = marked.parse(text);  // options already set globally via marked.use()
-      // Sanitize with DOMPurify if available, otherwise allow as-is (source is our own Claude API)
-      return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+      return DOMPurify.sanitize(raw);
     }
+    console.warn("renderMarkdown: marked/DOMPurify unavailable — rendering escaped text");
     // Fallback: escape HTML and convert newlines
     return text
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

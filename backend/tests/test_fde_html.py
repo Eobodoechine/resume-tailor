@@ -100,7 +100,11 @@ class TestHtmlEscaping:
 
     def test_linkedin_url_escaped(self):
         html = self._render(linkedin='" onmouseover="alert(1)" x="')
-        assert "onmouseover" not in html
+        # Value is rendered as escaped TEXT, not an attribute: the quotes become
+        # &quot;, so no event-handler attribute can break out. Assert the *active*
+        # injection form is absent (the inert, escaped word may remain as text).
+        assert 'onmouseover="' not in html
+        assert "&quot;" in html
 
     def test_ampersand_entity_encoded(self):
         html = self._render(name="Johnson & Johnson")

@@ -50,6 +50,22 @@ _fde_mock_mod = MagicMock(name="renderers.fde_docx")
 _fde_mock_mod.FDEDocxRenderer = _fde_renderer_cls
 sys.modules["renderers.fde_docx"] = _fde_mock_mod
 
+# ── 4. Stub services.claude as a MagicMock before any route imports it ───────
+# routes.tailor / routes.master do `from services import claude as claude_service`
+# and `ai_client = claude_service.client`, binding the module by name at import.
+# Endpoint tests configure it with `claude.tailor_resume.return_value = ...` and
+# `routes.tailor.ai_client.messages.create.return_value...`. Without a stub the
+# REAL services.claude (which constructs a live anthropic.Anthropic client at
+# import) loads, and whether the stub is present becomes import-order dependent —
+# the root cause of the order-dependent endpoint-test failures.
+# test_claude_service.py and test_pdf_pipeline.py intentionally pop→import-real→
+# restore this stub, so this is the documented contract.
+_claude_stub = MagicMock(name="services.claude")
+_claude_stub.API_TIMEOUT = 60.0
+_claude_stub.client = MagicMock(name="anthropic.client")
+_claude_stub.async_client = MagicMock(name="anthropic.async_client")
+sys.modules["services.claude"] = _claude_stub
+
 # ── Shared constants ──────────────────────────────────────────────────────────
 import uuid
 import pytest

@@ -216,7 +216,7 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         logger.error("[tailor] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     # Use admin client for the insert — RLS insert policy may require service role
     insert_result = admin.table("tailored_resumes").insert({
@@ -239,8 +239,28 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
     }
 
 
+def _is_blocked_ip(ip_str: str) -> bool:
+    """True if the address is internal (private/loopback/link-local/reserved/etc.).
+    Raises ValueError if ip_str isn't a valid IP."""
+    ip = ipaddress.ip_address(ip_str)
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_unspecified or ip.is_multicast
+    )
+
+
 def _validate_fetch_url(url: str):
-    """Block SSRF: reject non-http(s) schemes, private IPs, and loopback addresses."""
+    """Block SSRF: reject non-http(s) schemes, internal hostnames, and any host
+    that resolves to an internal address.
+
+    Uses socket.getaddrinfo() and validates EVERY resolved address (all A/AAAA
+    records, IPv4 + IPv6) — not just the first IPv4 from gethostbyname(), which a
+    host with an extra private record or an IPv6 address could slip past.
+    NOTE: a fully DNS-rebinding-proof fix would pin the validated IP into the
+    httpx connection via a custom transport; combined with fetch_jd's
+    post-redirect re-check, validating every resolved address closes the
+    practical bypasses.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
@@ -251,15 +271,23 @@ def _validate_fetch_url(url: str):
     blocked_hosts = {"localhost", "metadata.google.internal"}
     if hostname.lower() in blocked_hosts:
         raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
-    # Resolve and block private/loopback IP ranges
+    # Resolve ALL addresses; reject if ANY is internal.
     try:
-        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
-    except HTTPException:
-        raise
+        infos = socket.getaddrinfo(hostname, None)
     except Exception:
-        pass  # DNS failure will be caught by httpx below
+        # DNS failure — let httpx surface a clean fetch error downstream.
+        logger.info("[fetch-jd] DNS resolution failed  host=%r — deferring to httpx", hostname)
+        return
+    resolved = sorted({info[4][0] for info in infos})
+    logger.info("[fetch-jd] SSRF check  host=%r  resolved=%s", hostname, resolved)
+    for ip_str in resolved:
+        try:
+            blocked = _is_blocked_ip(ip_str)
+        except ValueError:
+            continue  # unparseable address — skip
+        if blocked:
+            logger.warning("[fetch-jd] blocked internal address  host=%r  ip=%s", hostname, ip_str)
+            raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
 
 
 _BROWSER_UA = (
@@ -349,7 +377,7 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
         raise HTTPException(status_code=400, detail=f"The site returned an error ({http_status}). Try pasting the text directly.")
     except Exception as e:
         logger.error("[fetch-jd] 400 unexpected error  user=%s  url=%r  error=%s", ctx.user.id, body.url, e)
-        raise HTTPException(status_code=400, detail=f"Could not fetch URL: {str(e)}")
+        raise HTTPException(status_code=400, detail="Couldn't fetch that URL. Try pasting the job description text instead.")
 
 
 @router.post("/stream")
@@ -643,7 +671,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
         logger.error("[refine] 502 Claude error  user=%s  record_id=%s  error=%s", ctx.user.id, record_id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     reply = response.content[0].text
 
@@ -739,7 +767,7 @@ async def _fetch_record_and_profile(
             "[tailor] DB query FAILED  record_id=%s  user=%s  error=%s\n%s",
             record_id, ctx.user.id, e, traceback.format_exc(),
         )
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail="A database error occurred. Please try again.")
 
     if not result.data:
         logger.warning(
@@ -805,7 +833,7 @@ async def preview_html(
             "[preview_html] parse FAILED  record_id=%s  user=%s  error=%s\n%s",
             record_id, ctx.user.id, e, traceback.format_exc(),
         )
-        raise HTTPException(status_code=500, detail=f"Resume parse failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not process the resume. Please try again.")
 
     try:
         html = await asyncio.to_thread(FDEHtmlRenderer().render_html, resume_data)
@@ -814,7 +842,7 @@ async def preview_html(
             "[preview_html] render_html FAILED  record_id=%s  user=%s  error=%s\n%s",
             record_id, ctx.user.id, e, traceback.format_exc(),
         )
-        raise HTTPException(status_code=500, detail=f"HTML render failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not render the resume. Please try again.")
 
     logger.info(
         "[preview_html] COMPLETE  record_id=%s  user=%s  html_len=%d",
@@ -884,7 +912,7 @@ async def download_pdf(
             "[download_pdf] text_to_resume_data FAILED  record_id=%s  error=%s\n%s",
             record_id, e, traceback.format_exc(),
         )
-        raise HTTPException(status_code=500, detail=f"Resume parse failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not process the resume. Please try again.")
 
     # Render PDF — path branches on RESUME_PDF_ENGINE.
     logger.info("[download_pdf] acquiring semaphore  engine=%s", RESUME_PDF_ENGINE)
@@ -913,7 +941,7 @@ async def download_pdf(
             "[download_pdf] renderer FAILED  engine=%s  record_id=%s  error=%s\n%s",
             RESUME_PDF_ENGINE, record_id, e, traceback.format_exc(),
         )
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not generate the PDF. Please try again.")
 
     logger.info(
         "[download_pdf] returning PDF  filename=%s  size=%d  engine=%s",

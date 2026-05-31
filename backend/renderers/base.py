@@ -42,6 +42,22 @@ class CertificationEntry(TypedDict, total=False):
     detail: Optional[str]  # e.g. "Microsoft • Active"
 
 
+class TrainingEntry(TypedDict, total=False):
+    name:   str            # e.g. "ML with Python & SQL"
+    detail: Optional[str]  # e.g. "Harvard Extension • 2022"
+
+
+class GenericSection(TypedDict, total=False):
+    """Catch-all for any section the renderer doesn't have a typed builder for.
+    title  — the section heading as it should appear on the resume.
+    items  — list of strings rendered as bullet points, OR
+             list of dicts with keys: text (str), detail (str), bullets (list[str])
+             for structured entries like projects or awards.
+    """
+    title: str
+    items: list
+
+
 class ResumeData(TypedDict, total=False):
     # Contact — always present
     name:     str
@@ -58,8 +74,14 @@ class ResumeData(TypedDict, total=False):
     experience:       list   # list[ExperienceRole]
     featured_project: Optional[FeaturedProject]
     skills:           list   # list[SkillGroup]
+    training:         Optional[list]   # list[TrainingEntry] — sidebar
     education:        Optional[list]   # list[EducationEntry]
     certifications:   Optional[list]   # list[CertificationEntry | str]
+
+    # Flexible catch-all: any section not covered by a typed field above.
+    # Renderers iterate these in order and append to the appropriate column.
+    extra_main_sections:    Optional[list]   # list[GenericSection] — main column
+    extra_sidebar_sections: Optional[list]   # list[GenericSection] — sidebar
 
 
 @runtime_checkable

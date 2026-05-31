@@ -1,4 +1,4 @@
-"""
+r"""
 Tests for backend/routes/tailor.py.
 
 Changes this session:
@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 # ─── _safe_filename_part ──────────────────────────────────────────────────────
 
 class TestSafeFilenamePart:
-    """
+    r"""
     _safe_filename_part must:
       - Allow word chars, spaces (→ underscores), and hyphens
       - STRIP tabs and newlines (the \s→literal-space fix)
@@ -76,7 +76,7 @@ class TestSafeFilenamePart:
 
     # The critical \s → literal-space fix
     def test_tab_character_stripped(self):
-        """
+        r"""
         Old regex [^\w\s\-] kept tabs because \s matches them.
         New regex [^\w \-] (literal space) strips tabs.
         """
@@ -86,7 +86,7 @@ class TestSafeFilenamePart:
         )
 
     def test_newline_character_stripped(self):
-        """Same as tab: \s kept newlines; literal space does not."""
+        r"""Same as tab: \s kept newlines; literal space does not."""
         result = self._fn("Company\nName")
         assert "\n" not in result, (
             "Newline survived safe_filename_part — the \\s→literal-space fix was not applied."

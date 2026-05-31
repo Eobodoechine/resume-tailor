@@ -10,8 +10,11 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
     ext = filename.lower().rsplit(".", 1)[-1]
     if ext == "pdf":
         return _extract_pdf(file_bytes)
-    elif ext in ("docx", "doc"):
+    elif ext == "docx":
         return _extract_docx(file_bytes)
+    elif ext == "doc":
+        # python-docx only reads OOXML (.docx); legacy OLE2 .doc is unsupported (B4).
+        raise ValueError("Legacy .doc files are not supported — please save as .docx or PDF.")
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 

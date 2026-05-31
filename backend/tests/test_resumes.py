@@ -45,14 +45,15 @@ class TestMagicBytesValidation:
         from routes.resumes import _check_magic_bytes
         assert _check_magic_bytes(b"%PDF-1.4 bad", "docx") is False
 
-    def test_doc_extension_passes_without_magic_check(self):
+    def test_doc_extension_rejected(self):
         """
-        Legacy .doc (OLE2 compound) has inconsistent magic bytes across versions.
-        We trust the extension alone for .doc — any byte content is accepted.
+        B4: legacy .doc (OLE2) is no longer supported — python-docx cannot read
+        it. _check_magic_bytes returns False for .doc (the upload route rejects
+        the .doc extension before this is even reached).
         """
         from routes.resumes import _check_magic_bytes
-        assert _check_magic_bytes(b"\xd0\xcf\x11\xe0 ole2-header", "doc") is True
-        assert _check_magic_bytes(b"anything at all", "doc") is True
+        assert _check_magic_bytes(b"\xd0\xcf\x11\xe0 ole2-header", "doc") is False
+        assert _check_magic_bytes(b"anything at all", "doc") is False
 
     def test_empty_bytes_fails_pdf(self):
         from routes.resumes import _check_magic_bytes
