@@ -204,5 +204,5 @@ def _send_via_supabase_otp(email: str):
         })
         logger.info("[otp] magic link sent OK  email=%s", email)
     except Exception as e:
-        logger.error("[otp] FAILED to send magic link  email=%s  error=%s", email, e)
-        raise HTTPException(status_code=500, detail=f"Failed to send magic link: {str(e)}")
+        logger.error("[otp] FAILED to send magic link  email=%s  error=%s", email, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Couldn't send the magic link. Please try again.")

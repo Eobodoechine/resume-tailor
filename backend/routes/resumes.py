@@ -136,7 +136,7 @@ async def upload_resume(
                     ctx.user.id, safe_filename, len(extracted))
     except Exception as e:
         logger.error("[resumes] upload 422 text extraction failed  user=%s  filename=%r  error=%s",
-                     ctx.user.id, safe_filename, e)
+                     ctx.user.id, safe_filename, e, exc_info=True)
         raise HTTPException(status_code=422, detail="Could not read the file. Make sure it's a valid PDF or DOCX.")
 
     # Upload to Supabase Storage — uuid in path prevents collisions; safe_filename strips traversal
@@ -151,7 +151,7 @@ async def upload_resume(
         logger.info("[resumes] upload storage OK  user=%s  path=%s", ctx.user.id, storage_path)
     except Exception as e:
         logger.error("[resumes] upload 500 storage FAILED  user=%s  filename=%r  path=%s  error=%s",
-                     ctx.user.id, safe_filename, storage_path, e)
+                     ctx.user.id, safe_filename, storage_path, e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to store file. Please try again.")
 
     # Save metadata to DB — use admin client since storage returns service-level metadata.
@@ -166,7 +166,7 @@ async def upload_resume(
         }).execute()
     except Exception as e:
         logger.error("[resumes] upload DB insert FAILED — removing orphaned storage file  user=%s  path=%s  error=%s",
-                     ctx.user.id, storage_path, e)
+                     ctx.user.id, storage_path, e, exc_info=True)
         try:
             admin.storage.from_(RESUME_BUCKET).remove([storage_path])
         except Exception as cleanup_err:
@@ -209,6 +209,6 @@ def delete_resume(file_id: str, ctx: AuthContext = Depends(require_user)):
         logger.info("[resumes] delete storage removed  user=%s  path=%s", ctx.user.id, file_path)
     except Exception as e:
         logger.warning("[resumes] delete storage FAILED (file orphaned in bucket)  user=%s  path=%s  error=%s",
-                       ctx.user.id, file_path, e)
+                       ctx.user.id, file_path, e, exc_info=True)
 
     return {"message": "File deleted"}
