@@ -110,8 +110,8 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
         logger.error("[synthesize] 504 Claude timeout  user=%s", ctx.user.id)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[synthesize] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        logger.error("[synthesize] 502 Claude error  user=%s  error=%s", ctx.user.id, e, exc_info=True)
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     # Upsert master resume — single round trip, no TOCTOU race if two requests
     # hit synthesize concurrently (both would have hit the empty-branch and tried
@@ -126,7 +126,7 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
         rows_affected = len(upsert_result.data) if upsert_result.data else 0
         logger.info("[synthesize] DB upsert OK  user=%s  rows=%d", ctx.user.id, rows_affected)
     except Exception as e:
-        logger.error("[synthesize] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e)
+        logger.error("[synthesize] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to save master resume. Please try again.")
 
     logger.info("[synthesize] COMPLETE  user=%s", ctx.user.id)
@@ -225,8 +225,8 @@ Current master resume:
         logger.error("[gap-fill] 504 Claude timeout  user=%s", ctx.user.id)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[gap-fill] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+        logger.error("[gap-fill] 502 Claude error  user=%s  error=%s", ctx.user.id, e, exc_info=True)
+        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     reply = response.content[0].text
     # Log whether output was truncated — if output_tokens == max_tokens the reply
@@ -265,7 +265,7 @@ Current master resume:
             rows = len(upsert_result.data) if upsert_result.data else 0
             logger.info("[gap-fill] DB upsert OK  user=%s  rows=%d", ctx.user.id, rows)
         except Exception as e:
-            logger.error("[gap-fill] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e)
+            logger.error("[gap-fill] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e, exc_info=True)
             # Don't 500 — the reply is still useful even if the save failed
 
         # Strip the update block from the visible reply

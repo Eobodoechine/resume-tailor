@@ -108,7 +108,7 @@ def approve_request(request: Request, body: ApprovalBody, _ctx: AuthContext = De
         logger.info("[admin] invite email sent  email=%s  by=%s", email, _ctx.user.id)
     except Exception as e:
         logger.error("[admin] invite email FAILED (user still approved)  email=%s  error=%s  by=%s",
-                     email, e, _ctx.user.id)
+                     email, e, _ctx.user.id, exc_info=True)
         return {
             "message": (
                 f"Approved, but invite email failed: {str(e)}. "

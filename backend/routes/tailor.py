@@ -215,7 +215,7 @@ def tailor_resume(request: Request, body: TailorRequest, ctx: AuthContext = Depe
         logger.error("[tailor] 504 Claude timeout  user=%s  company=%r  job_title=%r", ctx.user.id, body.company, body.job_title)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[tailor] 502 Claude error  user=%s  error=%s", ctx.user.id, e)
+        logger.error("[tailor] 502 Claude error  user=%s  error=%s", ctx.user.id, e, exc_info=True)
         raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     # Use admin client for the insert — RLS insert policy may require service role
@@ -376,7 +376,7 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
             raise HTTPException(status_code=400, detail="The site blocked the request (403 Forbidden). Paste the job description text instead.")
         raise HTTPException(status_code=400, detail=f"The site returned an error ({http_status}). Try pasting the text directly.")
     except Exception as e:
-        logger.error("[fetch-jd] 400 unexpected error  user=%s  url=%r  error=%s", ctx.user.id, body.url, e)
+        logger.error("[fetch-jd] 400 unexpected error  user=%s  url=%r  error=%s", ctx.user.id, body.url, e, exc_info=True)
         raise HTTPException(status_code=400, detail="Couldn't fetch that URL. Try pasting the job description text instead.")
 
 
@@ -445,8 +445,8 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
             return
         except Exception as e:
             logger.error("[stream-tailor] Claude stream error  user=%s  chunks_so_far=%d  error=%s",
-                         user_id, len(full_chunks), e)
-            yield f"data: {_json.dumps({'error': str(e)})}\n\n"
+                         user_id, len(full_chunks), e, exc_info=True)
+            yield f"data: {_json.dumps({'error': 'The AI service had an error. Please try again.'})}\n\n"
             return
 
         stream_ms = int((time.monotonic() - t0_stream) * 1000)
@@ -480,7 +480,7 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
             logger.info("[stream-tailor] DB insert OK  user=%s  record_id=%s  company=%r  job_title=%r",
                         user_id, record_id, company, job_title)
         except Exception as e:
-            logger.error("[stream-tailor] DB insert FAILED (record lost)  user=%s  error=%s", user_id, e)
+            logger.error("[stream-tailor] DB insert FAILED (record lost)  user=%s  error=%s", user_id, e, exc_info=True)
             record_id = None
 
         yield f"data: {_json.dumps({'done': True, 'id': record_id})}\n\n"
@@ -670,7 +670,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
         logger.error("[refine] 504 Claude timeout  user=%s  record_id=%s", ctx.user.id, record_id)
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
     except Exception as e:
-        logger.error("[refine] 502 Claude error  user=%s  record_id=%s  error=%s", ctx.user.id, record_id, e)
+        logger.error("[refine] 502 Claude error  user=%s  record_id=%s  error=%s", ctx.user.id, record_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
 
     reply = response.content[0].text
@@ -712,7 +712,7 @@ Ask ONE question at a time. Be specific to this role and resume — not generic.
                         ctx.user.id, record_id, rows)
         except Exception as e:
             logger.error("[refine] DB update FAILED  user=%s  record_id=%s  error=%s",
-                         ctx.user.id, record_id, e)
+                         ctx.user.id, record_id, e, exc_info=True)
             # Don't 500 — the reply is still useful even if the save failed
         visible_reply = reply[:update_start].strip()
     else:
