@@ -35,7 +35,15 @@ import logging
 import os
 from typing import Optional
 
+from fastapi import HTTPException
 from renderers.base import ResumeData, Renderer
+
+# Module-level reference to html_to_pdf — imported lazily so tests can patch it
+# via `patch("renderers.fde_html.html_to_pdf", ...)` without requiring Playwright.
+try:
+    from renderers.playwright_pdf import html_to_pdf  # noqa: F401 (re-exported for patching)
+except ImportError:  # pragma: no cover — playwright not installed in this env
+    html_to_pdf = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +325,7 @@ def _build_generic_sidebar_section(section: dict) -> str:
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
-def _build_css() -> str:
+def _build_css(body_size: float = 9.0, header_size: float = 9.5) -> str:
     font_family = (
         "'LiberationSans', Arial, 'Helvetica Neue', sans-serif"
         if _FONTS_AVAILABLE
@@ -337,7 +345,7 @@ def _build_css() -> str:
 html, body {{
   width: 8.5in;
   font-family: {font_family};
-  font-size: 9pt;
+  font-size: {body_size}pt;
   color: {_TEXT_MAIN};
   background: white;
   /* Force exact colour reproduction in print — required or teal bg disappears */
@@ -423,7 +431,7 @@ html, body {{
   flex-shrink: 0;
 }}
 .section-bar-text {{
-  font-size: 9.5pt;
+  font-size: {header_size}pt;
   font-weight: 700;
   letter-spacing: 0.5pt;
   text-transform: uppercase;
@@ -573,6 +581,15 @@ html, body {{
 """
 
 
+# ── PDF page-count helper ─────────────────────────────────────────────────────
+
+def _count_pdf_pages(pdf_bytes: bytes) -> int:
+    """Return the number of pages in a PDF given its raw bytes."""
+    from pypdf import PdfReader
+    import io
+    return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+
+
 # ── Public renderer ───────────────────────────────────────────────────────────
 
 class FDEHtmlRenderer:
@@ -587,7 +604,12 @@ class FDEHtmlRenderer:
                           Implements the Renderer protocol.
     """
 
-    def render_html(self, data: ResumeData) -> str:
+    def render_html(
+        self,
+        data: ResumeData,
+        body_size: float = 9.0,
+        header_size: float = 9.5,
+    ) -> str:
         """Return a complete, self-contained HTML string for this resume."""
         name    = data.get("name") or ""
         tagline = data.get("tagline") or ""
@@ -634,7 +656,7 @@ class FDEHtmlRenderer:
             _FONTS_AVAILABLE,
         )
 
-        css = _build_css()
+        css = _build_css(body_size=body_size, header_size=header_size)
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -682,16 +704,44 @@ class FDEHtmlRenderer:
         Implements the Renderer protocol so this class is a drop-in for
         FDEDocxRenderer in the renderer registry.
 
+        Two-pass overflow guard:
+          Pass 1: render with default font sizes (9pt body, 9.5pt headers).
+                  If the result fits on one page, return immediately.
+          Pass 2: if overflow detected, re-render with reduced fonts (8.5pt/8.5pt).
+                  If one page, return.
+          If still overflowing after pass 2: raise HTTPException(422).
+
         Called from asyncio.to_thread() in the tailor route — runs sync,
         starts its own event loop for the Playwright async calls.
         """
         import asyncio
-        from renderers.playwright_pdf import html_to_pdf
+        import renderers.fde_html as _self  # use module ref so tests can patch html_to_pdf
 
-        html = self.render_html(data)
-        logger.info("[fde_html] render → playwright  html_len=%d", len(html))
+        # ── Pass 1 ────────────────────────────────────────────────────────────
+        html1 = self.render_html(data, body_size=9.0, header_size=9.5)
+        logger.info("[fde_html] render → playwright pass=1  html_len=%d", len(html1))
+        pdf1 = asyncio.run(_self.html_to_pdf(html1))
+        pages1 = _count_pdf_pages(pdf1)
+        logger.info("[fde_html] pass=1 pages=%d font=9pt", pages1)
+        if pages1 == 1:
+            return pdf1
 
-        # If called from an already-running event loop (e.g. in tests),
-        # asyncio.get_event_loop().run_until_complete() would deadlock.
-        # asyncio.run() always creates a fresh loop — safe for thread contexts.
-        return asyncio.run(html_to_pdf(html))
+        # ── Pass 2: reduce font sizes ─────────────────────────────────────────
+        html2 = self.render_html(data, body_size=8.5, header_size=8.5)
+        logger.info("[fde_html] render → playwright pass=2  html_len=%d", len(html2))
+        pdf2 = asyncio.run(_self.html_to_pdf(html2))
+        pages2 = _count_pdf_pages(pdf2)
+        logger.info("[fde_html] pass=2 pages=%d font=8.5pt", pages2)
+        if pages2 == 1:
+            return pdf2
+
+        # ── Still overflowing ─────────────────────────────────────────────────
+        logger.error(
+            "[fde_html] overflow: still >1 page after font reduction  "
+            "pass1_pages=%d  pass2_pages=%d",
+            pages1, pages2,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail="Resume is too long to fit one page. Please shorten your content and try again.",
+        )

@@ -152,6 +152,114 @@ class TestRequestAccess:
         r = authed_client.post("/api/auth/request-access", json={"email": "not-an-email"})
         assert r.status_code == 422
 
+    def test_admin_notified_on_new_request(self, authed_client, monkeypatch):
+        """
+        After a new access request is inserted, a notification email is sent to
+        ADMIN_EMAIL via the anon client's auth.admin.send_raw_email.  The call
+        must use the configured ADMIN_EMAIL as the recipient.
+        """
+        import routes.auth as m
+
+        # Patch admin client (DB insert)
+        admin_mock = MagicMock()
+        admin_mock.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        admin_mock.table.return_value.insert.return_value.execute.return_value = MagicMock(data=[{}])
+        monkeypatch.setattr(m, "get_admin_client", lambda: admin_mock)
+
+        # Patch anon client (email notification)
+        anon_mock = MagicMock()
+        monkeypatch.setattr(m, "get_anon_client", lambda: anon_mock)
+
+        r = authed_client.post("/api/auth/request-access", json={
+            "email": "requester@example.com",
+            "full_name": "Test User",
+            "reason": "Need access to tailor resumes",
+        })
+
+        assert r.status_code == 200
+
+        # Verify send_raw_email was called with ADMIN_EMAIL as recipient
+        anon_mock.auth.admin.send_raw_email.assert_called_once()
+        call_kwargs = anon_mock.auth.admin.send_raw_email.call_args
+        # Works whether called positionally or with keyword args
+        if call_kwargs.kwargs:
+            to_addr = call_kwargs.kwargs.get("to")
+            subject = call_kwargs.kwargs.get("subject", "")
+        else:
+            args = call_kwargs.args
+            to_addr = args[0] if args else None
+            subject = args[1] if len(args) > 1 else ""
+
+        assert to_addr == m.ADMIN_EMAIL, (
+            f"Notification email sent to {to_addr!r} instead of ADMIN_EMAIL={m.ADMIN_EMAIL!r}"
+        )
+        assert "requester@example.com" in subject.lower() or "requester@example.com" in str(subject), (
+            f"Requester email not found in notification subject: {subject!r}"
+        )
+
+    def test_admin_notification_failure_does_not_500(self, authed_client, monkeypatch):
+        """
+        If sending the admin notification email fails, the endpoint must still
+        return 200 (non-fatal).
+        """
+        import routes.auth as m
+
+        admin_mock = MagicMock()
+        admin_mock.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        admin_mock.table.return_value.insert.return_value.execute.return_value = MagicMock(data=[{}])
+        monkeypatch.setattr(m, "get_admin_client", lambda: admin_mock)
+
+        # Make the anon client's email call raise
+        anon_mock = MagicMock()
+        anon_mock.auth.admin.send_raw_email.side_effect = RuntimeError("SMTP failure")
+        monkeypatch.setattr(m, "get_anon_client", lambda: anon_mock)
+
+        r = authed_client.post("/api/auth/request-access", json={
+            "email": "failtest@example.com",
+            "full_name": "Fail Test",
+            "reason": "Testing failure path",
+        })
+
+        assert r.status_code == 200, (
+            "request_access must return 200 even when admin email notification fails"
+        )
+
+
+class TestIsAdminEndpoint:
+
+    def test_is_admin_returns_true_for_admin_user(self, authed_client, monkeypatch):
+        """Authenticated user with ADMIN_EMAIL gets is_admin: true."""
+        import routes.auth as m
+        from config import ADMIN_EMAIL
+
+        user_mock = MagicMock()
+        user_mock.email = ADMIN_EMAIL
+        user_mock.id = "admin-uuid"
+        monkeypatch.setattr(m, "get_user_from_token", lambda t: user_mock)
+
+        r = authed_client.get("/api/auth/is-admin", headers={"Authorization": "Bearer test-token"})
+        assert r.status_code == 200
+        assert r.json().get("is_admin") is True
+
+    def test_is_admin_returns_false_for_non_admin_user(self, authed_client, monkeypatch):
+        """Authenticated user with non-admin email gets is_admin: false."""
+        import routes.auth as m
+
+        user_mock = MagicMock()
+        user_mock.email = "notadmin@example.com"
+        user_mock.id = "user-uuid"
+        monkeypatch.setattr(m, "get_user_from_token", lambda t: user_mock)
+
+        r = authed_client.get("/api/auth/is-admin", headers={"Authorization": "Bearer test-token"})
+        assert r.status_code == 200
+        assert r.json().get("is_admin") is False
+
+    def test_is_admin_returns_false_when_no_token(self, authed_client):
+        """Unauthenticated request returns is_admin: false (not 401)."""
+        r = authed_client.get("/api/auth/is-admin")
+        assert r.status_code == 200
+        assert r.json().get("is_admin") is False
+
 
 class TestLogin:
 

@@ -2,13 +2,15 @@
 Unit tests for renderers/fde_html.py
 
 Covers: HTML escaping (XSS), all-empty resume, font fallback,
-section presence/absence, CSS column proportions.
+section presence/absence, CSS column proportions, two-pass overflow guard.
 
 No mocks needed for most tests — the renderer is pure Python string logic.
 Font-related tests patch _FONTS_AVAILABLE at module level.
 """
+import io
 import sys
 import pytest
+from unittest.mock import AsyncMock, patch
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -315,3 +317,145 @@ class TestColumnProportions:
     def test_page_size_is_letter(self):
         from renderers.fde_html import _build_css
         assert "letter" in _build_css().lower()
+
+
+# ── 6. _build_css font-size parameters ───────────────────────────────────────
+
+class TestBuildCssFontSizeParams:
+    """_build_css() must accept body_size and header_size and embed them in CSS."""
+
+    def test_default_body_size_is_9pt(self):
+        from renderers.fde_html import _build_css
+        css = _build_css()
+        assert "font-size: 9pt" in css
+
+    def test_default_header_size_is_9_5pt(self):
+        from renderers.fde_html import _build_css
+        css = _build_css()
+        assert "font-size: 9.5pt" in css
+
+    def test_custom_body_size_is_embedded(self):
+        from renderers.fde_html import _build_css
+        css = _build_css(body_size=8.5)
+        assert "font-size: 8.5pt" in css
+
+    def test_custom_header_size_is_embedded(self):
+        from renderers.fde_html import _build_css
+        css = _build_css(header_size=8.5)
+        assert "font-size: 8.5pt" in css
+
+    def test_render_html_passes_font_params_to_css(self):
+        html = make_renderer().render_html(minimal_data(), body_size=8.5, header_size=8.5)
+        assert "font-size: 8.5pt" in html
+
+    def test_render_html_default_fonts_unchanged(self):
+        html = make_renderer().render_html(minimal_data())
+        assert "font-size: 9pt" in html
+
+
+# ── 7. Two-pass overflow guard ────────────────────────────────────────────────
+
+def _make_pdf_bytes(num_pages: int) -> bytes:
+    """Return minimal valid PDF bytes with the given number of pages."""
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for _ in range(num_pages):
+        writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+class TestTwoPassOverflowGuard:
+    """
+    render() must:
+    - Return immediately on a single-page result (pass 1).
+    - Retry with smaller fonts if pass 1 overflows.
+    - Raise HTTPException(422) if still overflowing after pass 2.
+    """
+
+    def test_render_single_page_returned_immediately(self):
+        """Pass 1 produces 1 page → return that PDF, html_to_pdf called once."""
+        one_page_pdf = _make_pdf_bytes(1)
+
+        async def mock_html_to_pdf(html):
+            return one_page_pdf
+
+        renderer = make_renderer()
+        with patch("renderers.fde_html.html_to_pdf", new=mock_html_to_pdf):
+            import asyncio
+            # We need to track call count; wrap in a counter
+            call_count = [0]
+            original_mock = mock_html_to_pdf
+
+            async def counting_mock(html):
+                call_count[0] += 1
+                return one_page_pdf
+
+            with patch("renderers.fde_html.html_to_pdf", new=counting_mock):
+                result = renderer.render(minimal_data())
+
+        assert result == one_page_pdf
+        assert call_count[0] == 1
+
+    def test_render_overflow_retries_smaller_font(self):
+        """Pass 1 = 2 pages, pass 2 = 1 page → return pass-2 PDF, called twice."""
+        one_page_pdf = _make_pdf_bytes(1)
+        two_page_pdf = _make_pdf_bytes(2)
+
+        call_count = [0]
+
+        async def mock_html_to_pdf(html):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return two_page_pdf
+            return one_page_pdf
+
+        renderer = make_renderer()
+        with patch("renderers.fde_html.html_to_pdf", new=mock_html_to_pdf):
+            result = renderer.render(minimal_data())
+
+        assert result == one_page_pdf
+        assert call_count[0] == 2
+
+    def test_render_still_overflows_raises_422(self):
+        """Both passes produce > 1 page → HTTPException with status_code=422."""
+        from fastapi import HTTPException
+
+        two_page_pdf = _make_pdf_bytes(2)
+
+        async def mock_html_to_pdf(html):
+            return two_page_pdf
+
+        renderer = make_renderer()
+        with patch("renderers.fde_html.html_to_pdf", new=mock_html_to_pdf):
+            with pytest.raises(HTTPException) as exc_info:
+                renderer.render(minimal_data())
+
+        assert exc_info.value.status_code == 422
+        assert "too long" in exc_info.value.detail.lower()
+
+    def test_render_pass2_uses_smaller_font(self):
+        """Pass 2 HTML must use 8.5pt body/header font sizes."""
+        two_page_pdf = _make_pdf_bytes(2)
+        one_page_pdf = _make_pdf_bytes(1)
+
+        captured_htmls = []
+        call_count = [0]
+
+        async def mock_html_to_pdf(html):
+            captured_htmls.append(html)
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return two_page_pdf
+            return one_page_pdf
+
+        renderer = make_renderer()
+        with patch("renderers.fde_html.html_to_pdf", new=mock_html_to_pdf):
+            renderer.render(minimal_data())
+
+        assert call_count[0] == 2
+        # Pass 1 should use 9pt
+        assert "font-size: 9pt" in captured_htmls[0]
+        # Pass 2 should use 8.5pt
+        assert "font-size: 8.5pt" in captured_htmls[1]

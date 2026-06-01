@@ -74,28 +74,7 @@
     }
     .hint-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
 
-    /* ── JD input toggle ── */
-    .jd-toggle {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .jd-toggle button {
-      padding: 6px 16px;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--light);
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .jd-toggle button.active {
-      background: var(--navy);
-      color: #fff;
-      border-color: var(--navy);
-    }
+    /* ── URL-first input row ── */
     .url-row {
       display: flex;
       gap: 8px;
@@ -115,6 +94,99 @@
       transition: opacity 0.15s;
     }
     .btn-fetch:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    /* ── Manual JD details/summary toggle ── */
+    .jd-manual-toggle {
+      margin-top: 10px;
+    }
+    .jd-manual-toggle summary {
+      font-size: 13px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      padding: 6px 0;
+    }
+    .jd-manual-toggle summary:hover { color: var(--navy); }
+    .jd-manual-toggle[open] summary { color: var(--navy); font-weight: 500; }
+
+    /* ── Job confirmation card ── */
+    #jd-confirm-card {
+      margin-top: 14px;
+      background: #f0fdf4;
+      border: 1px solid #86efac;
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    #jd-confirm-card .confirm-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    #jd-confirm-card .confirm-check {
+      width: 22px;
+      height: 22px;
+      background: #22c55e;
+      border-radius: 50%;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    #jd-confirm-card .confirm-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #14532d;
+    }
+    #jd-confirm-card .confirm-meta {
+      font-size: 13px;
+      color: #166534;
+      margin-bottom: 10px;
+    }
+    #jd-confirm-card .confirm-meta span {
+      font-weight: 600;
+    }
+    #jd-confirm-card .confirm-preview {
+      font-size: 12px;
+      color: #15803d;
+      line-height: 1.6;
+      background: rgba(255,255,255,0.6);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      border: 1px solid #bbf7d0;
+    }
+    #jd-confirm-card .confirm-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    #btn-confirm-generate {
+      padding: 10px 20px;
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #btn-confirm-generate:hover { opacity: 0.88; }
+    #btn-confirm-edit {
+      font-size: 13px;
+      color: var(--muted);
+      background: none;
+      border: none;
+      cursor: pointer;
+      text-decoration: underline;
+      padding: 0;
+    }
+    #btn-confirm-edit:hover { color: var(--navy); }
 
     /* ── Result content area ── */
     #result-text {
@@ -278,6 +350,55 @@
       min-height: 16px;
     }
 
+    /* Quick-edit fields */
+    #quick-edit {
+      padding: 12px 16px 0;
+      background: #fff;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #quick-edit label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    #quick-edit input[type="text"] {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    #quick-edit input[type="text"]:focus { border-color: var(--navy); }
+    #quick-apply-btn {
+      align-self: flex-end;
+      height: 34px;
+      padding: 0 16px;
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      margin-bottom: 4px;
+    }
+    #quick-apply-btn:hover { opacity: 0.85; }
+    #quick-apply-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .quick-edit-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 10px 0 0;
+    }
+
     /* Typing dots animation */
     .typing-dots span {
       display: inline-block;
@@ -311,6 +432,53 @@
       white-space: nowrap;
     }
     #btn-download:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Section generation progress bar (Item 9) ── */
+    #gen-progress {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    #gen-progress .seg {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 4px;
+      border-radius: 6px;
+      background: #d1d5db;
+      color: #6b7280;
+      transition: background 0.4s ease, color 0.4s ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #gen-progress .seg.active {
+      background: #388978;
+      color: #fff;
+    }
+
+    /* ── What-changed card (Item 10) ── */
+    #what-changed-card {
+      background: #f0faf5;
+      border: 1px solid #388978;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 14px;
+    }
+    #what-changed-card .wc-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1a5c4a;
+      margin-bottom: 8px;
+    }
+    #what-changed-card ul {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 13px;
+      color: #1a5c4a;
+      line-height: 1.7;
+    }
   </style>
 </head>
 <body>
@@ -323,6 +491,7 @@
     <a href="/improve">Improve</a>
     <a href="/history">History</a>
     <a href="/profile">Profile</a>
+    <a href="/admin" id="admin-nav-link" style="display:none">Admin</a>
     <a href="#" onclick="logout()">Sign Out</a>
   </div>
 </nav>
@@ -360,34 +529,46 @@
       <span><strong>Tip:</strong> Add Job Title and Company before generating. They sharpen the AI coaching session and name your downloaded PDF automatically.</span>
     </div>
 
-    <label>Job Title <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label>
+    <!-- Step 1 primary input: URL -->
+    <label>Job Listing URL <span style="color:var(--muted);font-weight:400;font-size:12px">(fastest — paste the link)</span></label>
+    <div class="url-row">
+      <input type="url" id="jd-url-input" placeholder="Paste job listing URL — LinkedIn, Greenhouse, Lever...">
+      <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch Job</button>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;">
+      Works best with Greenhouse, Lever, and company career pages. <strong>LinkedIn requires a login</strong> — paste the text instead below.
+    </p>
+
+    <!-- Job confirmation card (shown after successful fetch) -->
+    <div id="jd-confirm-card" style="display:none;">
+      <div class="confirm-header">
+        <div class="confirm-check">✓</div>
+        <div class="confirm-title">Job fetched successfully</div>
+      </div>
+      <div class="confirm-meta" id="confirm-meta-text"></div>
+      <div class="confirm-preview" id="confirm-preview-text"></div>
+      <div class="confirm-actions">
+        <button id="btn-confirm-generate" onclick="tailorResume()">Generate Tailored Resume</button>
+        <button id="btn-confirm-edit" onclick="showManualEdit()">Edit job details</button>
+      </div>
+    </div>
+
+    <!-- Manual entry (collapsed by default) -->
+    <details class="jd-manual-toggle" id="jd-manual-details">
+      <summary>or paste the job description manually</summary>
+      <div style="margin-top:8px;">
+        <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:160px;"></textarea>
+      </div>
+    </details>
+
+    <!-- Hidden textarea for fetched JD text (preserves existing JS logic) -->
+    <textarea id="jd-fetched" style="display:none;"></textarea>
+
+    <label style="margin-top:14px;">Job Title <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label>
     <input type="text" id="job-title" placeholder="e.g. Senior Financial Analyst">
 
     <label>Company <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label>
     <input type="text" id="company" placeholder="e.g. Blackstone">
-
-    <label>Job Description <span style="color:var(--red);font-size:12px">required</span></label>
-    <div class="jd-toggle">
-      <button id="btn-mode-paste" class="active" onclick="setMode('paste')">Paste text</button>
-      <button id="btn-mode-url" onclick="setMode('url')">Use URL</button>
-    </div>
-
-    <!-- Paste mode -->
-    <div id="jd-paste-area">
-      <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:160px;"></textarea>
-    </div>
-
-    <!-- URL mode -->
-    <div id="jd-url-area" style="display:none;">
-      <div class="url-row">
-        <input type="url" id="jd-url" placeholder="https://jobs.lever.co/company/job-id">
-        <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch JD</button>
-      </div>
-      <p style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;">
-        Works best with Greenhouse, Lever, and company career pages. <strong>LinkedIn requires a login</strong> — paste the text instead. If fetch fails, just copy-paste the JD.
-      </p>
-      <textarea id="jd-fetched" placeholder="Fetched job description will appear here — review and edit before generating." style="min-height:140px;margin-top:10px;display:none;"></textarea>
-    </div>
 
     <button class="btn btn-primary" id="btn-tailor" onclick="tailorResume()" style="margin-top:10px;width:100%;justify-content:center;font-size:14px;padding:12px 20px;">
       Generate Tailored Resume
@@ -422,7 +603,21 @@
       </iframe>
     </div>
 
+    <!-- Section progress bar — visible during generation (Item 9) -->
+    <div id="gen-progress" style="display:none;">
+      <span class="seg" data-section="SUMMARY">Summary</span>
+      <span class="seg" data-section="EXPERIENCE">Experience</span>
+      <span class="seg" data-section="SKILLS">Skills</span>
+      <span class="seg" data-section="EDUCATION">Education</span>
+    </div>
+
     <div id="result-text"></div>
+
+    <!-- What changed card — shown after generation (Item 10) -->
+    <div id="what-changed-card" style="display:none;">
+      <div class="wc-title">What changed in this version</div>
+      <ul id="what-changed-list"></ul>
+    </div>
 
     <!-- Inline refinement chat — auto-opens after generation -->
     <div id="refine-panel" style="display:none;">
@@ -431,6 +626,14 @@
       </div>
       <div id="refine-messages"></div>
       <div id="refine-upload-status"></div>
+      <div id="quick-edit">
+        <label>Remove from resume</label>
+        <input type="text" id="remove-input" placeholder='e.g. "Remove the Server role"'>
+        <label>Add or emphasize</label>
+        <input type="text" id="add-input" placeholder='e.g. "Add more emphasis on SharePoint"'>
+        <button id="quick-apply-btn" onclick="applyQuickEdit()">Apply Changes</button>
+        <hr class="quick-edit-divider">
+      </div>
       <div id="refine-input-row">
         <input type="file" id="refine-file-input" accept=".pdf,.docx" style="display:none" onchange="uploadMasterResume(this)">
         <button id="btn-refine-upload" title="Upload updated master resume" onclick="document.getElementById('refine-file-input').click()">📎</button>
@@ -442,13 +645,14 @@
 
 </div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=10"></script>
 <script>
   requireAuth();
 
   let currentRecordId = null;
   let refineHistory   = [];
-  let jdMode          = "paste";
+  let jdMode          = "paste"; // "paste" or "fetched"
+  let masterContent   = "";      // Item 10: master resume content for diff
 
   // Configure marked for safe inline rendering.
   // marked.use() is the non-deprecated API in marked v5+; options are set once
@@ -467,45 +671,111 @@
     }
   }
 
-  // ── JD mode toggle ─────────────────────────────────────────────────────────
-
-  function setMode(mode) {
-    jdMode = mode;
-    document.getElementById("btn-mode-paste").classList.toggle("active", mode === "paste");
-    document.getElementById("btn-mode-url").classList.toggle("active",   mode === "url");
-    document.getElementById("jd-paste-area").style.display = mode === "paste" ? "block" : "none";
-    document.getElementById("jd-url-area").style.display   = mode === "url"   ? "block" : "none";
-  }
+  // ── JD text retrieval ──────────────────────────────────────────────────────
 
   function getJDText() {
-    return jdMode === "paste"
-      ? document.getElementById("jd").value.trim()
-      : document.getElementById("jd-fetched").value.trim();
+    // Prefer fetched JD if available, otherwise fall back to manually pasted text
+    const fetched = document.getElementById("jd-fetched").value.trim();
+    if (fetched) return fetched;
+    return document.getElementById("jd").value.trim();
   }
 
+  // ── Job confirmation card helpers ──────────────────────────────────────────
+
+  function parseJobMeta(text) {
+    // Simple extraction: look for common role/company patterns or fall back to
+    // first non-empty line (role) and existing field values.
+    const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+
+    let role    = document.getElementById("job-title").value.trim();
+    let company = document.getElementById("company").value.trim();
+
+    if (!role && lines.length > 0) {
+      // First line is usually the job title
+      role = lines[0].replace(/^(job title|position|role)[:\-–\s]*/i, "").trim();
+      if (role.length > 80) role = role.slice(0, 80) + "…";
+    }
+
+    if (!company) {
+      // Look for "at Company" or "@ Company" patterns in first 10 lines
+      for (const line of lines.slice(0, 10)) {
+        const m = line.match(/(?:^|\s)(?:at|@)\s+([A-Z][A-Za-z0-9&.,'\- ]{2,40})/);
+        if (m) { company = m[1].trim(); break; }
+      }
+    }
+
+    // Preview: first 2-3 sentences or up to 200 chars
+    const preview = text.slice(0, 220).replace(/\s+/g, " ").trim() +
+                    (text.length > 220 ? "…" : "");
+
+    return { role, company, preview };
+  }
+
+  function showConfirmCard(jdText) {
+    const { role, company, preview } = parseJobMeta(jdText);
+
+    // Auto-populate fields if they were empty
+    if (role    && !document.getElementById("job-title").value.trim()) {
+      document.getElementById("job-title").value = role;
+    }
+    if (company && !document.getElementById("company").value.trim()) {
+      document.getElementById("company").value = company;
+    }
+
+    let metaHtml = "";
+    if (role    ) metaHtml += `<span>${role}</span>`;
+    if (company ) metaHtml += (metaHtml ? " · " : "") + `at <span>${company}</span>`;
+    if (!metaHtml) metaHtml = "Job description ready — review and generate.";
+
+    document.getElementById("confirm-meta-text").innerHTML  = metaHtml;
+    document.getElementById("confirm-preview-text").textContent = preview;
+    document.getElementById("jd-confirm-card").style.display = "block";
+
+    // Hide the standalone Generate button while card is visible
+    document.getElementById("btn-tailor").style.display = "none";
+  }
+
+  function hideConfirmCard() {
+    document.getElementById("jd-confirm-card").style.display = "none";
+    document.getElementById("btn-tailor").style.display = "block";
+  }
+
+  function showManualEdit() {
+    hideConfirmCard();
+    // Open the manual details panel and focus the textarea
+    const details = document.getElementById("jd-manual-details");
+    details.open = true;
+    document.getElementById("jd").focus();
+  }
+
+  // ── URL fetch ──────────────────────────────────────────────────────────────
+
   async function fetchJD() {
-    const url = document.getElementById("jd-url").value.trim();
+    const url = document.getElementById("jd-url-input").value.trim();
     if (!url) return showAlert("alert-box", "Please enter a URL.", "error");
 
     const btn = document.getElementById("btn-fetch");
     btn.disabled = true;
     btn.textContent = "Fetching…";
 
+    // Hide any previously shown confirm card while re-fetching
+    hideConfirmCard();
+
     try {
       const res = await apiFetch("/api/tailor/fetch-jd", {
         method: "POST",
         body: JSON.stringify({ url })
       });
-      const ta = document.getElementById("jd-fetched");
-      ta.value = res.text;
-      ta.style.display = "block";
-      showAlert("alert-box", "✓ Job description fetched — review and edit if needed, then click Generate.", "success");
+      // Store fetched text in the hidden textarea so getJDText() picks it up
+      document.getElementById("jd-fetched").value = res.text;
+      jdMode = "fetched";
+      showConfirmCard(res.text);
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
-      btn.textContent = "Fetch JD";
+      btn.textContent = "Fetch Job";
     }
   }
 
@@ -518,7 +788,10 @@
 
     if (!jd) return showAlert("alert-box", "Please add a job description (paste text or fetch from URL).", "error");
 
-    const btn = document.getElementById("btn-tailor");
+    // Disable whichever generate button is currently visible
+    const btnTailor  = document.getElementById("btn-tailor");
+    const btnConfirm = document.getElementById("btn-confirm-generate");
+    const btn = (btnTailor.style.display !== "none") ? btnTailor : btnConfirm;
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span> Generating…`;
     setStep(2);
@@ -528,6 +801,21 @@
     resultText.textContent = "";
     document.getElementById("result-panel").style.display = "block";
     document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+
+    // Item 9: Reset and show section progress bar
+    resetGenProgress();
+    document.getElementById("gen-progress").style.display = "flex";
+
+    // Item 10: Hide what-changed card on new generation
+    document.getElementById("what-changed-card").style.display = "none";
+
+    // Item 10: Fetch master resume content for diff (best-effort — don't block generation)
+    try {
+      const masterRes = await apiFetch("/api/master/");
+      masterContent = masterRes.content || masterRes.text || "";
+    } catch (_) {
+      masterContent = "";
+    }
 
     try {
       const res = await fetch("/api/tailor/stream", {
@@ -574,6 +862,8 @@
             }
             if (evt.chunk) {
               resultText.textContent += evt.chunk;
+              // Item 9: scan accumulated text for section headers
+              updateGenProgress(resultText.textContent);
             }
             if (evt.done) {
               if (!evt.id) {
@@ -582,6 +872,10 @@
                 return;
               }
               currentRecordId = evt.id;
+              // Item 9: hide progress bar
+              document.getElementById("gen-progress").style.display = "none";
+              // Item 10: compute and show what-changed card
+              showWhatChanged(resultText.textContent, masterContent);
               setStep(3);
               startRefineChat();
               // Try to load the HTML preview (only works when RESUME_PDF_ENGINE=playwright)
@@ -748,6 +1042,29 @@
     }
   }
 
+  function applyQuickEdit() {
+    const removeInput = document.getElementById("remove-input");
+    const addInput    = document.getElementById("add-input");
+    const removeValue = removeInput.value.trim();
+    const addValue    = addInput.value.trim();
+
+    if (!removeValue && !addValue) return;
+
+    let message = "Please make these targeted changes to the resume:";
+    if (removeValue) message += "\nRemove: " + removeValue;
+    if (addValue)    message += "\nAdd or emphasize: " + addValue;
+
+    // Populate the refine input and trigger sendRefine
+    const refineInput = document.getElementById("refine-input");
+    refineInput.value = message;
+
+    // Clear the quick-edit inputs
+    removeInput.value = "";
+    addInput.value    = "";
+
+    sendRefine();
+  }
+
   function addUpdateNotice() {
     const notice = document.createElement("div");
     notice.className = "msg update-notice";
@@ -799,7 +1116,155 @@
         sendRefine();
       }
     });
+
+    // ── Edit mode: ?edit={record_id} navigated from History ──────────────────
+    // If the URL contains ?edit=<uuid>, fetch that record and jump to step 3
+    // (the refine panel) without re-generating the resume.
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get("edit");
+    if (editId) {
+      loadEditRecord(editId);
+    }
   });
+
+  async function loadEditRecord(recordId) {
+    try {
+      const record = await apiFetch(`/api/tailor/${encodeURIComponent(recordId)}`);
+
+      // Populate the input fields so the user can see what was used
+      const jobTitleEl = document.getElementById("job-title");
+      const companyEl  = document.getElementById("company");
+      const jdEl       = document.getElementById("jd");
+      const resultText = document.getElementById("result-text");
+
+      if (jobTitleEl) jobTitleEl.value = record.job_title  || "";
+      if (companyEl)  companyEl.value  = record.company    || "";
+      if (jdEl)       jdEl.value       = record.job_description || "";
+
+      // Populate the tailored content into the result area
+      if (resultText) resultText.textContent = record.tailored_content || "";
+
+      // Set the current record ID so the refine chat and PDF download work
+      currentRecordId = record.id;
+
+      // Show the result panel
+      document.getElementById("result-panel").style.display = "block";
+
+      // Advance the step indicator to step 3 (Refine with AI)
+      setStep(3);
+
+      // Open the refine chat using the existing record (no re-generation)
+      startRefineChat();
+
+      // Try to load the HTML preview if the engine supports it
+      loadPreview(record.id);
+
+      // Scroll the result panel into view
+      document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+    } catch (e) {
+      if (e && e.redirecting) return;
+      showAlert("alert-box", "Could not load the record: " + e.message, "error");
+    }
+  }
+
+  // ── Item 9: Section generation progress bar helpers ────────────────────────
+
+  // Map of section keywords to their data-section attribute values (order matters)
+  const SECTION_KEYS = [
+    { keyword: "SUMMARY",    attr: "SUMMARY"    },
+    { keyword: "EXPERIENCE", attr: "EXPERIENCE" },
+    { keyword: "SKILLS",     attr: "SKILLS"     },
+    { keyword: "EDUCATION",  attr: "EDUCATION"  },
+  ];
+
+  function resetGenProgress() {
+    document.querySelectorAll("#gen-progress .seg").forEach(seg => {
+      seg.classList.remove("active");
+    });
+  }
+
+  function updateGenProgress(accumulatedText) {
+    const upper = accumulatedText.toUpperCase();
+    SECTION_KEYS.forEach(({ keyword, attr }) => {
+      if (upper.includes(keyword)) {
+        const seg = document.querySelector(`#gen-progress .seg[data-section="${attr}"]`);
+        if (seg) seg.classList.add("active");
+      }
+    });
+  }
+
+  // ── Item 10: What-changed card helpers ─────────────────────────────────────
+
+  const STOP_WORDS = new Set([
+    "the","a","an","and","or","but","in","on","at","to","for","of","with",
+    "by","from","as","is","was","are","were","be","been","being","have",
+    "has","had","do","does","did","will","would","could","should","may",
+    "might","shall","can","not","no","this","that","these","those","it",
+    "its","i","you","he","she","we","they","my","your","his","her","our",
+    "their","me","him","us","them","what","which","who","whom","whose",
+    "when","where","why","how","all","each","every","both","few","more",
+    "most","other","some","such","than","then","there","so","up","out",
+    "about","into","through","during","before","after","above","below",
+    "between","own","same","just","because","while","although","however",
+    "resume","experience","professional","work","role","position","skills",
+    "ability","team","strong","including","also","new","job","company"
+  ]);
+
+  function countBullets(text) {
+    // Count lines starting with bullet-like characters or dashes
+    const lines = text.split("\n");
+    return lines.filter(l => /^\s*[•\-\*•–—]/.test(l)).length;
+  }
+
+  function extractKeywords(text) {
+    return new Set(
+      text.toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(w => w.length > 4 && !STOP_WORDS.has(w))
+    );
+  }
+
+  function showWhatChanged(tailoredText, masterText) {
+    const bullets = [];
+
+    // Bullet 1: always present — tailored for this role
+    bullets.push("Tailored summary and positioning for this specific role");
+
+    // Bullet 2: keyword count
+    const tailoredWords = extractKeywords(tailoredText);
+    const masterWords   = masterText ? extractKeywords(masterText) : new Set();
+    const newWords = [...tailoredWords].filter(w => !masterWords.has(w));
+    if (newWords.length > 0) {
+      bullets.push(`${newWords.length} new keyword${newWords.length === 1 ? "" : "s"} added from the job description`);
+    }
+
+    // Bullet 3: bullet point diff
+    const tailoredBullets = countBullets(tailoredText);
+    const masterBullets   = masterText ? countBullets(masterText) : 0;
+    if (tailoredBullets > 0) {
+      if (masterText && tailoredBullets !== masterBullets) {
+        const diff = tailoredBullets - masterBullets;
+        if (diff > 0) {
+          bullets.push(`${diff} experience bullet${diff === 1 ? "" : "s"} rewritten for relevance`);
+        } else {
+          bullets.push(`Experience section condensed to ${tailoredBullets} focused bullet${tailoredBullets === 1 ? "" : "s"}`);
+        }
+      } else {
+        bullets.push("Rewritten experience bullets for relevance to this job");
+      }
+    }
+
+    const list = document.getElementById("what-changed-list");
+    list.innerHTML = "";
+    bullets.forEach(b => {
+      const li = document.createElement("li");
+      li.textContent = b;
+      list.appendChild(li);
+    });
+
+    document.getElementById("what-changed-card").style.display = "block";
+  }
 
   // ── PDF download ───────────────────────────────────────────────────────────
   // safeFilePart is defined in app.js (shared utility — no duplicate here).

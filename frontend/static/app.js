@@ -246,6 +246,24 @@ async function logout() {
   window.location.href = "/";
 }
 
+// ── Admin nav link ─────────────────────────────────────────────────────────
+// After a session is active, check /api/auth/is-admin and show the hidden
+// admin nav link if the current user is the admin.  Called once per page load
+// so every authenticated page gets the correct visibility without extra code
+// in each page's inline script.
+(function initAdminNavLink() {
+  if (!isLoggedIn()) return;
+  fetch("/api/auth/is-admin", { credentials: "include" })
+    .then(res => res.ok ? res.json() : { is_admin: false })
+    .then(data => {
+      if (data.is_admin) {
+        const link = document.getElementById("admin-nav-link");
+        if (link) link.style.display = "";
+      }
+    })
+    .catch(() => {});  // non-fatal: link stays hidden on failure
+})();
+
 // ── Handle Supabase magic link token in URL ────────────────────────────────
 // After clicking a magic link, Supabase redirects to /dashboard#access_token=…
 // We extract the token, POST it to /api/auth/session to set an HttpOnly cookie,
