@@ -17,6 +17,7 @@
     <a href="/improve">Improve</a>
     <a href="/history" class="active">History</a>
     <a href="/profile">Profile</a>
+    <a href="/admin" id="admin-nav-link" style="display:none">Admin</a>
     <a href="#" onclick="logout()">Sign Out</a>
   </div>
 </nav>
@@ -49,7 +50,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=10"></script>
 <script>
   requireAuth();
 
@@ -75,6 +76,15 @@
 
     const tdBtn = document.createElement("td");
     tdBtn.style.textAlign = "right";
+    tdBtn.style.whiteSpace = "nowrap";
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "btn btn-outline btn-edit-record";
+    editBtn.style.cssText = "font-size:12px;padding:5px 12px;margin-right:6px";
+    editBtn.dataset.id = r.id;
+    editBtn.textContent = "Edit";
+    tdBtn.appendChild(editBtn);
+
     const btn = document.createElement("button");
     btn.className = "btn btn-outline btn-download-pdf";
     btn.style.cssText = "font-size:12px;padding:5px 12px";
@@ -165,6 +175,14 @@
     const company = btn.dataset.company || "";
     const role    = btn.dataset.role    || "";
     downloadPDF(id, company, role);
+  });
+
+  // Event delegation for Edit buttons
+  document.getElementById("history-body").addEventListener("click", function(e) {
+    const btn = e.target.closest(".btn-edit-record");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    window.location.href = "/tailor?edit=" + encodeURIComponent(id);
   });
 </script>
 </body>

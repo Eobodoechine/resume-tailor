@@ -247,3 +247,102 @@ class TestRequestIdPassedAsString:
             f"Expected 422 for non-UUID request_id, got {r.status_code}. "
             "This means request_id is still typed as str, not uuid.UUID."
         )
+
+
+# ─── Profile full_name copy on approve ───────────────────────────────────────
+
+class TestApproveRequestCopiesFullName:
+    """
+    When approve_request succeeds, it must upsert the profiles table with
+    the full_name taken from the access_requests row.
+    """
+
+    def _make_admin_mock(self, request_uuid, full_name="Jane Doe"):
+        """
+        Build a MagicMock admin client that:
+          - select on access_requests returns a row with full_name
+          - update on access_requests succeeds
+          - invite_user_by_email succeeds
+          - upsert on profiles succeeds
+        """
+        admin_mock = MagicMock()
+
+        # access_requests SELECT
+        admin_mock.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": str(request_uuid), "email": "jane@example.com", "full_name": full_name}]
+        )
+        # access_requests UPDATE
+        admin_mock.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[{}])
+        # profiles UPSERT (the new call we added)
+        admin_mock.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[{}])
+        # invite
+        admin_mock.auth.admin.invite_user_by_email.return_value = MagicMock()
+
+        return admin_mock
+
+    def test_profile_upserted_with_correct_full_name(self, admin_authed_client, monkeypatch):
+        """
+        After a successful approve, the admin client must have called
+        profiles.upsert with full_name matching the access_requests row.
+        """
+        import routes.admin as m
+
+        test_uuid = uuid.uuid4()
+        expected_full_name = "Jane Doe"
+        admin_mock = self._make_admin_mock(test_uuid, full_name=expected_full_name)
+        monkeypatch.setattr(m, "get_admin_client", lambda: admin_mock)
+
+        r = admin_authed_client.post("/api/admin/approve", json={"request_id": str(test_uuid)})
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.json()}"
+
+        # Find the upsert call on profiles
+        upsert_calls = [
+            c for c in admin_mock.table.return_value.upsert.call_args_list
+        ]
+        assert upsert_calls, "profiles.upsert() was never called after approve"
+
+        upsert_payload = upsert_calls[0][0][0]  # first positional arg of first call
+        assert upsert_payload.get("full_name") == expected_full_name, (
+            f"Expected full_name={expected_full_name!r} in upsert payload, got: {upsert_payload}"
+        )
+
+    def test_profile_upsert_failure_does_not_500(self, admin_authed_client, monkeypatch):
+        """
+        If the profiles upsert raises, the endpoint must still return 200 —
+        the user is already approved, a missing profile name is non-fatal.
+        """
+        import routes.admin as m
+
+        test_uuid = uuid.uuid4()
+        admin_mock = self._make_admin_mock(test_uuid, full_name="Bob Smith")
+        # Make the upsert blow up
+        admin_mock.table.return_value.upsert.return_value.execute.side_effect = Exception("DB error")
+        monkeypatch.setattr(m, "get_admin_client", lambda: admin_mock)
+
+        r = admin_authed_client.post("/api/admin/approve", json={"request_id": str(test_uuid)})
+        assert r.status_code == 200, (
+            f"Upsert failure must be non-fatal. Got {r.status_code}: {r.json()}"
+        )
+
+    def test_empty_full_name_skips_upsert(self, admin_authed_client, monkeypatch):
+        """
+        If the access_requests row has no full_name (empty string or None),
+        profiles.upsert() should NOT be called — no point writing an empty name.
+        """
+        import routes.admin as m
+
+        test_uuid = uuid.uuid4()
+        admin_mock = MagicMock()
+        # Row with empty full_name
+        admin_mock.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": str(test_uuid), "email": "nobody@example.com", "full_name": ""}]
+        )
+        admin_mock.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[{}])
+        admin_mock.auth.admin.invite_user_by_email.return_value = MagicMock()
+        monkeypatch.setattr(m, "get_admin_client", lambda: admin_mock)
+
+        r = admin_authed_client.post("/api/admin/approve", json={"request_id": str(test_uuid)})
+        assert r.status_code == 200
+
+        # upsert must NOT have been called
+        admin_mock.table.return_value.upsert.assert_not_called()

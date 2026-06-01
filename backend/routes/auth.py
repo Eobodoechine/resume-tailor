@@ -56,6 +56,26 @@ def request_access(request: Request, body: AccessRequestBody):
     }).execute()
     logger.info("[request-access] new request inserted  email=%s", email)
 
+    # Notify admin of the new access request — non-fatal if email fails
+    try:
+        anon = get_anon_client()
+        anon.auth.admin.send_raw_email(
+            to=ADMIN_EMAIL,
+            subject=f"New access request: {email}",
+            body=(
+                f"A new access request has been submitted.\n\n"
+                f"Name:   {body.full_name or '(not provided)'}\n"
+                f"Email:  {email}\n"
+                f"Reason: {body.reason or '(not provided)'}\n"
+            ),
+        )
+        logger.info("[request-access] admin notification sent  admin=%s  requester=%s", ADMIN_EMAIL, email)
+    except Exception as exc:
+        logger.warning(
+            "[request-access] admin notification failed (non-fatal)  admin=%s  requester=%s  error=%s",
+            ADMIN_EMAIL, email, exc,
+        )
+
     return {"message": "Request received. You'll get an email when you're approved."}
 
 
@@ -173,6 +193,33 @@ def delete_session(response: Response, request: Request):
     response.delete_cookie(key=COOKIE_NAME, path="/", samesite="lax", secure=COOKIE_SECURE)
     logger.info("[delete-session] logout  had_cookie=%s", had_cookie)
     return {"message": "Logged out"}
+
+
+@router.get("/is-admin")
+def is_admin(request: Request):
+    """
+    Returns {"is_admin": true} if the authenticated user is the admin,
+    {"is_admin": false} otherwise. Requires a valid session cookie.
+    Returns {"is_admin": false} (not 401) when unauthenticated, so the
+    frontend can safely call this without error handling for the admin check.
+    """
+    # Extract token from cookie or Authorization header (mirrors require_user logic)
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+    if not token:
+        return {"is_admin": False}
+
+    user = get_user_from_token(token)
+    if not user:
+        return {"is_admin": False}
+
+    email = (getattr(user, "email", None) or "").lower()
+    is_admin_user = bool(ADMIN_EMAIL and email == ADMIN_EMAIL.lower())
+    logger.info("[is-admin] email=%s  is_admin=%s", email, is_admin_user)
+    return {"is_admin": is_admin_user}
 
 
 # Read APP_URL from env so magic-link redirects survive URL changes (TD-13)

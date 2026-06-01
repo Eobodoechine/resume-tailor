@@ -335,3 +335,78 @@ class TestDownloadPdfHead:
         """FastAPI validates record_id as uuid.UUID — non-UUID must 422."""
         r = authed_client.head("/api/tailor/not-a-uuid/pdf")
         assert r.status_code == 422
+
+
+# ─── GET /api/tailor/{record_id} ─────────────────────────────────────────────
+
+class TestGetRecord:
+    """
+    GET /api/tailor/{record_id} must:
+      - Return the full record (id, job_title, company, job_description,
+        tailored_content, created_at) for the owning user.
+      - Return 404 when the record belongs to a different user or does not exist.
+      - Return 422 for a non-UUID record_id.
+    """
+
+    _RECORD = {
+        "id": str(uuid.uuid4()),
+        "job_title": "Senior Engineer",
+        "company": "Acme Corp",
+        "job_description": "Build amazing things.",
+        "tailored_content": "SUMMARY\nTailored for Acme.",
+        "created_at": "2024-06-01T10:00:00Z",
+    }
+
+    def _setup_found(self, monkeypatch, record=None):
+        """Patch get_client so the DB returns the given record for owner check."""
+        import routes.tailor as m
+        rec = record or self._RECORD
+        db_mock = MagicMock()
+        db_mock.table.return_value.select.return_value \
+            .eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[rec])
+        monkeypatch.setattr(m, "get_client", lambda token: db_mock)
+        return db_mock
+
+    def _setup_not_found(self, monkeypatch):
+        """Patch get_client so the DB returns no rows (record absent or wrong user)."""
+        import routes.tailor as m
+        db_mock = MagicMock()
+        db_mock.table.return_value.select.return_value \
+            .eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        monkeypatch.setattr(m, "get_client", lambda token: db_mock)
+        return db_mock
+
+    def test_returns_full_record_for_owner(self, authed_client, monkeypatch):
+        """Owner gets a 200 with all expected fields."""
+        record_id = self._RECORD["id"]
+        self._setup_found(monkeypatch)
+        r = authed_client.get(f"/api/tailor/{record_id}")
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["id"] == record_id
+        assert body["job_title"]        == self._RECORD["job_title"]
+        assert body["company"]          == self._RECORD["company"]
+        assert body["job_description"]  == self._RECORD["job_description"]
+        assert body["tailored_content"] == self._RECORD["tailored_content"]
+
+    def test_returns_404_for_different_user(self, authed_client, monkeypatch):
+        """
+        When the DB returns no rows (record belongs to another user or doesn't
+        exist), the endpoint must respond with 404.
+        """
+        record_id = uuid.uuid4()
+        self._setup_not_found(monkeypatch)
+        r = authed_client.get(f"/api/tailor/{record_id}")
+        assert r.status_code == 404, f"Expected 404, got {r.status_code}: {r.text}"
+
+    def test_returns_404_for_nonexistent_record(self, authed_client, monkeypatch):
+        """A UUID that doesn't exist in the DB must return 404."""
+        record_id = uuid.uuid4()
+        self._setup_not_found(monkeypatch)
+        r = authed_client.get(f"/api/tailor/{record_id}")
+        assert r.status_code == 404
+
+    def test_non_uuid_returns_422(self, authed_client):
+        """FastAPI validates record_id as uuid.UUID — non-UUID input must 422."""
+        r = authed_client.get("/api/tailor/not-a-valid-uuid")
+        assert r.status_code == 422

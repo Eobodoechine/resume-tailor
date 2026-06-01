@@ -564,6 +564,37 @@ def get_history(
     }
 
 
+@router.get("/{record_id}")
+@limiter.limit("60/minute")
+def get_record(
+    request: Request,
+    record_id: uuid.UUID,
+    ctx: AuthContext = Depends(require_user),
+):
+    """
+    Return a single tailored resume record (full fields) for the owning user.
+
+    Returns 404 if the record does not exist or belongs to a different user
+    (RLS-equivalent check in application layer).
+    """
+    logger.info("[get_record] START  user=%s  record_id=%s", ctx.user.id, record_id)
+    db = get_client(ctx.token)
+
+    result = db.table("tailored_resumes") \
+        .select("id, job_title, company, job_description, tailored_content, created_at") \
+        .eq("id", str(record_id)) \
+        .eq("user_id", str(ctx.user.id)) \
+        .execute()
+
+    if not result.data:
+        logger.warning("[get_record] 404 record not found  user=%s  record_id=%s", ctx.user.id, record_id)
+        raise HTTPException(status_code=404, detail="Tailored resume not found")
+
+    record = result.data[0]
+    logger.info("[get_record] COMPLETE  user=%s  record_id=%s", ctx.user.id, record_id)
+    return record
+
+
 @router.post("/{record_id}/refine")
 @limiter.limit("20/minute")
 def refine_tailored(

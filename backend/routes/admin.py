@@ -116,6 +116,23 @@ def approve_request(request: Request, body: ApprovalBody, _ctx: AuthContext = De
             )
         }
 
+    # Copy full_name from the access_requests row into the profiles table.
+    # Non-fatal: the user is already approved and can log in — a missing name
+    # is cosmetic and can be fixed later.
+    full_name = req.get("full_name") or ""
+    if full_name:
+        try:
+            admin.table("profiles").upsert({
+                "email": email,
+                "full_name": full_name,
+            }, on_conflict="email").execute()
+            logger.debug("[admin] profile full_name synced  email=%s  full_name=%r", email, full_name)
+        except Exception as e:
+            logger.warning(
+                "[admin] profile full_name sync failed (non-fatal)  email=%s  error=%s",
+                email, e,
+            )
+
     return {"message": f"Invite sent to {email}"}
 
 
