@@ -1147,6 +1147,9 @@
       document.getElementById("jd-fetched").value = res.text;
       jdMode = "fetched";
       showConfirmCard(res.text);
+      if (res.warning) {
+        showAlert("alert-box", "⚠️ " + res.warning, "warning");
+      }
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");

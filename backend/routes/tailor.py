@@ -365,8 +365,35 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
                     "Try copying the job description text and pasting it directly."
                 )
             )
-        logger.info("[fetch-jd] COMPLETE  user=%s  final_chars=%d", ctx.user.id, min(len(text), MAX_JD_LENGTH))
-        return {"text": text[:MAX_JD_LENGTH]}
+        # Content validation: check for job-description indicators.
+        # Returns a warning (not an error) so the user can still proceed with
+        # whatever was fetched — they may know the content is correct even if
+        # our heuristic doesn't recognise it.
+        _JOB_KEYWORDS = {
+            "responsibilities", "requirements", "qualifications", "experience",
+            "skills", "apply", "position", "role", "candidate", "salary",
+            "opportunity", "employer", "benefits", "location", "remote",
+        }
+        text_lower = text.lower()
+        found_keywords = [kw for kw in _JOB_KEYWORDS if kw in text_lower]
+        warning = None
+        if len(found_keywords) < 2:
+            warning = (
+                "This URL doesn't look like a job listing — we couldn't find "
+                "job-related content. The fetched text is shown below; if it "
+                "looks wrong, paste the job description manually instead."
+            )
+            logger.warning(
+                "[fetch-jd] content validation: possible non-job URL  "
+                "user=%s  url=%r  chars=%d  keywords_found=%s",
+                ctx.user.id, body.url, len(text), found_keywords,
+            )
+        logger.info("[fetch-jd] COMPLETE  user=%s  final_chars=%d  keywords=%d",
+                    ctx.user.id, min(len(text), MAX_JD_LENGTH), len(found_keywords))
+        result = {"text": text[:MAX_JD_LENGTH]}
+        if warning:
+            result["warning"] = warning
+        return result
     except HTTPException:
         raise
     except httpx.TimeoutException:
