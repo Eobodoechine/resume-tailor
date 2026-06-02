@@ -458,6 +458,38 @@
       color: #fff;
     }
 
+    /* ── Resume section formatting (Issue 8) ── */
+    #result-text .resume-section-header {
+      display: block;
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--navy);
+      border-bottom: 2px solid var(--navy);
+      margin: 16px 0 6px;
+      padding-bottom: 3px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    #result-text .resume-section-header:first-child {
+      margin-top: 0;
+    }
+    #result-text .resume-role-header {
+      display: block;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text);
+      margin: 12px 0 2px;
+      border-left: 3px solid var(--green);
+      padding-left: 8px;
+    }
+    #result-text .resume-line {
+      display: block;
+    }
+    #result-text .resume-blank {
+      display: block;
+      height: 4px;
+    }
+
     /* ── What-changed card (Item 10) ── */
     #what-changed-card {
       background: #f0faf5;
@@ -637,7 +669,7 @@
       <div id="refine-input-row">
         <input type="file" id="refine-file-input" accept=".pdf,.docx" style="display:none" onchange="uploadMasterResume(this)">
         <button id="btn-refine-upload" title="Upload updated master resume" onclick="document.getElementById('refine-file-input').click()">📎</button>
-        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume…"></textarea>
+        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume… (Shift+Enter to send)"></textarea>
         <button id="btn-refine-send" onclick="sendRefine()">Send</button>
       </div>
     </div>
@@ -874,8 +906,11 @@
               currentRecordId = evt.id;
               // Item 9: hide progress bar
               document.getElementById("gen-progress").style.display = "none";
+              // Issue 8: post-process plain-text stream into formatted HTML
+              const fullText = resultText.textContent;
+              renderResumeText(fullText);
               // Item 10: compute and show what-changed card
-              showWhatChanged(resultText.textContent, masterContent);
+              showWhatChanged(fullText, masterContent);
               setStep(3);
               startRefineChat();
               // Try to load the HTML preview (only works when RESUME_PDF_ENGINE=playwright)
@@ -978,23 +1013,34 @@
     div.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  async function startRefineChat() {
+  async function startRefineChat({ jobTitle = "", company = "" } = {}) {
     document.getElementById("refine-panel").style.display = "block";
     addTypingIndicator();
+
+    // Build a context-aware first message so the coach response is specific to this role.
+    // Falls back to generic "start" if neither field is available (normal tailoring flow).
+    let firstMessage = "start";
+    if (jobTitle && company) {
+      firstMessage = `I'm reviewing my tailored resume for ${jobTitle} at ${company}. What should I improve?`;
+    } else if (jobTitle) {
+      firstMessage = `I'm reviewing my tailored resume for ${jobTitle}. What should I improve?`;
+    } else if (company) {
+      firstMessage = `I'm reviewing my tailored resume for a role at ${company}. What should I improve?`;
+    }
 
     try {
       const res = await apiFetch(`/api/tailor/${currentRecordId}/refine`, {
         method: "POST",
-        body: JSON.stringify({ message: "start", history: [] })
+        body: JSON.stringify({ message: firstMessage, history: [] })
       });
 
       document.getElementById("typing-indicator")?.remove();
-      refineHistory.push({ role: "user",      content: "start" });
+      refineHistory.push({ role: "user",      content: firstMessage });
       refineHistory.push({ role: "assistant", content: res.reply });
       addMessage(res.reply, "coach");
 
       if (res.updated_content) {
-        document.getElementById("result-text").textContent = res.updated_content;
+        renderResumeText(res.updated_content);
         addUpdateNotice();
       }
     } catch (e) {
@@ -1029,7 +1075,7 @@
       addMessage(res.reply, "coach");
 
       if (res.updated_content) {
-        document.getElementById("result-text").textContent = res.updated_content;
+        renderResumeText(res.updated_content);
         addUpdateNotice();
       }
     } catch (e) {
@@ -1108,10 +1154,10 @@
     }
   }
 
-  // Enter to send, Shift+Enter for newline
+  // Shift+Enter to send, Enter for newline
   document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("refine-input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
         sendRefine();
       }
@@ -1141,8 +1187,8 @@
       if (companyEl)  companyEl.value  = record.company    || "";
       if (jdEl)       jdEl.value       = record.job_description || "";
 
-      // Populate the tailored content into the result area
-      if (resultText) resultText.textContent = record.tailored_content || "";
+      // Populate the tailored content into the result area (Issue 8: use formatter)
+      if (resultText) renderResumeText(record.tailored_content || "");
 
       // Set the current record ID so the refine chat and PDF download work
       currentRecordId = record.id;
@@ -1153,8 +1199,9 @@
       // Advance the step indicator to step 3 (Refine with AI)
       setStep(3);
 
-      // Open the refine chat using the existing record (no re-generation)
-      startRefineChat();
+      // Open the refine chat using the existing record (no re-generation).
+      // Pass job title and company so the first message is context-aware rather than generic.
+      startRefineChat({ jobTitle: record.job_title || "", company: record.company || "" });
 
       // Try to load the HTML preview if the engine supports it
       loadPreview(record.id);
@@ -1266,6 +1313,65 @@
     document.getElementById("what-changed-card").style.display = "block";
   }
 
+  // ── Resume text formatter (Issue 8) ───────────────────────────────────────
+  // Post-processes the plain-text resume into styled HTML after the stream
+  // completes or after a refine update.  The stream itself always uses safe
+  // textContent assignment; this runs only once the full text is available.
+  //
+  // Detection rules:
+  //   Section header — line is ALL-CAPS (ignoring punctuation/spaces), ≥3 chars
+  //   Role header    — line contains at least one " | " pipe separator
+  //   Blank line     — empty after trim
+  //   All other lines rendered as plain escaped text.
+
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function isSectionHeader(line) {
+    // Strip non-alpha chars; if the remaining letters are all uppercase and
+    // there are at least 3 of them, treat as a section header.
+    const letters = line.replace(/[^A-Za-z]/g, "");
+    return letters.length >= 3 && letters === letters.toUpperCase();
+  }
+
+  function isRoleHeader(line) {
+    // A role header contains at least one " | " separator (Title | Company | Date style).
+    return line.includes(" | ");
+  }
+
+  function formatResumeHtml(text) {
+    const lines = text.split("\n");
+    const parts = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === "") {
+        parts.push('<span class="resume-blank"></span>');
+      } else if (isSectionHeader(trimmed)) {
+        parts.push(`<span class="resume-section-header">${escapeHtml(trimmed)}</span>`);
+      } else if (isRoleHeader(trimmed)) {
+        parts.push(`<span class="resume-role-header">${escapeHtml(trimmed)}</span>`);
+      } else {
+        parts.push(`<span class="resume-line">${escapeHtml(line)}</span>`);
+      }
+    }
+
+    return parts.join("");
+  }
+
+  function renderResumeText(text) {
+    const el = document.getElementById("result-text");
+    // Switch off pre-wrap now that we're rendering block-level spans,
+    // not raw text — pre-wrap would double-space around the span boundaries.
+    el.style.whiteSpace = "normal";
+    el.innerHTML = formatResumeHtml(text);
+  }
+
   // ── PDF download ───────────────────────────────────────────────────────────
   // safeFilePart is defined in app.js (shared utility — no duplicate here).
 
@@ -1280,7 +1386,7 @@
       const jobTitle = document.getElementById("job-title").value.trim();
       const c = safeFilePart(company)  || "tailored";
       const r = safeFilePart(jobTitle) || "resume";
-      const filename = `${c}_${r}.pdf`;
+      const filename = `${c}_${r}_resume.pdf`;
 
       await apiDownload(`/api/tailor/${currentRecordId}/pdf`, filename);
       setStep(4);

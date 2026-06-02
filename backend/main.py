@@ -114,6 +114,12 @@ def serve_improve():
 def serve_admin():
     return FileResponse(os.path.join(FRONTEND_DIR, "admin.html"))
 
+import logging as _logging
+_logging.getLogger(__name__).info(
+    "RESUME_PDF_ENGINE=%s",
+    os.getenv("RESUME_PDF_ENGINE", "libreoffice (default — set to 'playwright' to enable HTML preview)")
+)
+
 # TD-12: Health endpoint for uptime pings — prevents Render free-plan cold starts
 # when hit by an external cron service (e.g. cron-job.org every 10 minutes).
 @app.get("/health")

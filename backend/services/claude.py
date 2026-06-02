@@ -132,13 +132,43 @@ Output the complete master resume now, following the STRICT OUTPUT FORMAT above:
         messages=[{"role": "user", "content": prompt}],
         timeout=API_TIMEOUT,
     )
+    text = message.content[0].text
     logger.info(
-        "claude[synthesize] input=%d output=%d ms=%d",
+        "claude[synthesize] input=%d output=%d ms=%d chars=%d",
         message.usage.input_tokens,
         message.usage.output_tokens,
         int((time.monotonic() - t0) * 1000),
+        len(text),
     )
-    return message.content[0].text
+
+    # Truncation guard — if output hits max_tokens the resume was cut mid-content
+    if message.usage.output_tokens >= 4000:
+        logger.warning(
+            "synthesize: output hit max_tokens — likely TRUNCATED  "
+            "output_tokens=%d  tail=%r",
+            message.usage.output_tokens, text[-200:],
+        )
+
+    # Structural summary — tells you exactly what made it into the master
+    sections = [h for h in ("SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION", "CERTIFICATIONS", "PROJECTS")
+                if h in text]
+    # Role headers use "Title | Company | Dates" format (≥2 pipes per the prompt)
+    role_lines = [ln for ln in text.splitlines() if ln.count("|") >= 2]
+    logger.info(
+        "synthesize: OUTPUT STRUCTURE  sections=%s  roles=%d  chars=%d",
+        sections, len(role_lines), len(text),
+    )
+    if "EXPERIENCE" not in text:
+        logger.error(
+            "synthesize: EXPERIENCE section MISSING from output — master resume likely corrupted"
+        )
+    elif len(role_lines) == 0:
+        logger.warning(
+            "synthesize: EXPERIENCE section present but 0 pipe-delimited role headers detected  "
+            "check format or prompt compliance"
+        )
+
+    return text
 
 
 def _build_tailor_prompt(
