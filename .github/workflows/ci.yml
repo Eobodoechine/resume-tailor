@@ -36,5 +36,86 @@ jobs:
           SUPABASE_ANON_KEY: "fake-anon-key"
           SUPABASE_SERVICE_KEY: "fake-service-key"
           ANTHROPIC_API_KEY: "fake-anthropic-key"
+          ADMIN_EMAIL: "admin@test.com"
           JWT_SECRET: "fake-jwt-secret"
           ENV: "development"
+
+  docker-smoke:
+    name: Docker smoke — Chromium + app routes
+    runs-on: ubuntu-latest
+    # Docker build is slow (~8 min with LibreOffice). Run on push to main only,
+    # not on every PR — keeps PR feedback fast. Once a branch lands on main,
+    # this confirms the container is deployable before Render picks it up.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          # Cache key includes Dockerfile + requirements so a pip or apt change
+          # busts the cache and forces a full rebuild.
+          key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile', 'requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: resume-tailor:smoke
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Rotate cache (prevent unbounded growth)
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Smoke — Chromium launches
+        # The Dockerfile RUN step already verifies this at build time.
+        # This step re-confirms it in a running container (slightly different
+        # environment) and gives a clear job-level failure in the Actions UI.
+        run: |
+          docker run --rm resume-tailor:smoke python -c "
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(
+                  args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+              )
+              b.close()
+          print('smoke: chromium OK')
+          "
+
+      - name: Smoke — all page routes registered
+        # Imports the FastAPI app and asserts every frontend page route exists.
+        # Catches a missing @app.get('/admin') before Render deploys it.
+        run: |
+          docker run --rm \
+            -e SUPABASE_URL=https://fake.supabase.co \
+            -e SUPABASE_ANON_KEY=fake-anon \
+            -e SUPABASE_SERVICE_KEY=fake-service \
+            -e ANTHROPIC_API_KEY=sk-ant-fake000000000000000000000000000000000000 \
+            -e ADMIN_EMAIL=admin@test.com \
+            -e ENV=development \
+            resume-tailor:smoke python -c "
+          import sys
+          sys.path.insert(0, '/app/backend')
+          import main
+          registered = {r.path for r in main.app.routes}
+          required = ['/', '/dashboard', '/tailor', '/history',
+                      '/profile', '/improve', '/admin', '/health']
+          missing = [p for p in required if p not in registered]
+          if missing:
+              print(f'FAIL: routes missing: {missing}')
+              sys.exit(1)
+          print(f'smoke: all {len(required)} page routes present')
+          "

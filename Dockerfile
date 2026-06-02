@@ -45,6 +45,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Must run after pip install so the playwright CLI is available.
 RUN playwright install chromium
 
+# ── Smoke test: verify Chromium actually launches ─────────────────────────────
+# Runs at build time, so a BrowserType.launch failure breaks the build here
+# instead of silently breaking PDF generation after the container is deployed.
+# --no-sandbox     required in all Linux containers (no user namespaces).
+# --disable-dev-shm-usage  use /tmp instead of the 64 MB /dev/shm at build time.
+# --disable-gpu    no GPU in headless build environments.
+RUN python -c "\
+from playwright.sync_api import sync_playwright; \
+p = sync_playwright().start(); \
+b = p.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']); \
+b.close(); p.stop(); \
+print('smoke: chromium launch OK')"
+
 # Copy backend and frontend
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
