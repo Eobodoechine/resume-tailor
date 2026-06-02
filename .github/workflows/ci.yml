@@ -134,6 +134,7 @@ jobs:
             -e ANTHROPIC_API_KEY=sk-ant-fake000000000000000000000000000000000000 \
             -e ADMIN_EMAIL=admin@test.com \
             -e ENV=development \
+            -v ${{ github.workspace }}/backend/tests:/app/backend/tests:ro \
             resume-tailor:smoke \
             /bin/sh -c "pip install pytest pytest-asyncio httpx -q && \
               python -m pytest tests/test_playwright_pdf.py \
