@@ -18,14 +18,21 @@ import sys
 from unittest.mock import MagicMock
 
 # ── 1. Required env vars (BEFORE any app import) ─────────────────────────────
-os.environ.setdefault("SUPABASE_URL",         "https://testproject.supabase.co")
-os.environ.setdefault("SUPABASE_ANON_KEY",    "test-anon-key-abc123")
-os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-service-key-xyz789")
+# Use `or` assignment instead of setdefault — setdefault is a no-op when the
+# key exists as an empty string (e.g. ANTHROPIC_API_KEY= in the shell env),
+# which causes config._require() to raise even though conftest "set" the var.
+def _ensure_env(key: str, value: str) -> None:
+    if not os.environ.get(key):
+        os.environ[key] = value
+
+_ensure_env("SUPABASE_URL",          "https://testproject.supabase.co")
+_ensure_env("SUPABASE_ANON_KEY",     "test-anon-key-abc123")
+_ensure_env("SUPABASE_SERVICE_KEY",  "test-service-key-xyz789")
 # The Anthropic SDK accepts any non-empty string as api_key at init time.
 # "sk-ant-" prefix matches what the SDK expects if it does a prefix check.
-os.environ.setdefault("ANTHROPIC_API_KEY",    "sk-ant-test0000000000000000000000000000000000")
-os.environ.setdefault("ADMIN_EMAIL",          "admin@test.com")
-os.environ.setdefault("ENV",                  "development")
+_ensure_env("ANTHROPIC_API_KEY",     "sk-ant-test0000000000000000000000000000000000")
+_ensure_env("ADMIN_EMAIL",           "admin@test.com")
+_ensure_env("ENV",                   "development")
 
 # ── 2. Stub the rate-limiter before any route imports ────────────────────────
 # @limiter.limit("5/minute") etc. would fire for every test call that shares

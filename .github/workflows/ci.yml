@@ -121,3 +121,23 @@ jobs:
               sys.exit(1)
           print(f'smoke: all {len(required)} page routes present')
           "
+
+      - name: Smoke — Playwright-dependent tests (need Chromium in container)
+        # Runs the tests excluded from the main pytest job because they need
+        # a real Chromium binary: PDF rendering, overflow guard, preview endpoint.
+        # These only run here, inside the container where Chromium is installed.
+        run: |
+          docker run --rm \
+            -e SUPABASE_URL=https://fake.supabase.co \
+            -e SUPABASE_ANON_KEY=fake-anon \
+            -e SUPABASE_SERVICE_KEY=fake-service \
+            -e ANTHROPIC_API_KEY=sk-ant-fake000000000000000000000000000000000000 \
+            -e ADMIN_EMAIL=admin@test.com \
+            -e ENV=development \
+            -v ${{ github.workspace }}/backend/tests:/app/backend/tests:ro \
+            resume-tailor:smoke \
+            /bin/sh -c "pip install pytest pytest-asyncio httpx -q && \
+              python -m pytest tests/test_playwright_pdf.py \
+                tests/test_tailor_playwright.py \
+                tests/test_fde_html.py::TestTwoPassOverflowGuard \
+                -v --tb=short"
