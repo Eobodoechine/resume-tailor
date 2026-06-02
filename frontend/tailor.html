@@ -490,14 +490,7 @@
       height: 4px;
     }
 
-    /* ── What-changed card (Item 10) ── */
-    #what-changed-card {
-      background: #f0faf5;
-      border: 1px solid #388978;
-      border-radius: 10px;
-      padding: 14px 18px;
-      margin-bottom: 14px;
-    }
+    /* ── What-changed card (Item 10) — legacy styles kept for #what-changed-full ── */
     #what-changed-card .wc-title {
       font-size: 13px;
       font-weight: 700;
@@ -510,6 +503,342 @@
       font-size: 13px;
       color: #1a5c4a;
       line-height: 1.7;
+    }
+
+    /* ── Stage 4: two-panel split screen ── */
+    #stage4-container {
+      display: none; /* shown via JS after generation / edit load */
+      grid-template-columns: 55fr 45fr;
+      height: calc(100vh - 64px);
+      overflow: hidden;
+      /* negative margin to break out of .container padding */
+      margin: 0 -20px -20px;
+    }
+    #stage4-container.visible {
+      display: grid;
+    }
+
+    #left-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid #e5e7eb;
+    }
+
+    #left-panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      flex-shrink: 0;
+      background: #fff;
+    }
+
+    #resume-context-label {
+      font-size: 0.85rem;
+      color: #6b7280;
+      font-weight: 500;
+    }
+
+    .btn-download-prominent {
+      background: #16a34a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 18px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .btn-download-prominent:hover { background: #15803d; }
+
+    #left-panel-body {
+      flex: 1;
+      overflow: auto;
+      position: relative;
+    }
+
+    #preview-frame { width: 100%; height: 100%; border: none; }
+
+    #resume-text-display {
+      padding: 24px;
+      font-family: Georgia, serif;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    /* Section header formatting */
+    #resume-text-display .resume-section-header {
+      display: block;
+      font-weight: 700;
+      font-size: 1rem;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #374151;
+      margin: 18px 0 6px;
+      padding-bottom: 2px;
+      text-transform: uppercase;
+    }
+    #resume-text-display .resume-section-header:first-child { margin-top: 0; }
+
+    #resume-text-display .resume-role-header {
+      display: block;
+      font-weight: 600;
+      margin-top: 10px;
+      color: #1f2937;
+    }
+    #resume-text-display .resume-line { display: block; }
+    #resume-text-display .resume-blank { display: block; height: 4px; }
+
+    #right-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #f9fafb;
+    }
+
+    #right-panel-header {
+      padding: 10px 16px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: #374151;
+      border-bottom: 1px solid #e5e7eb;
+      flex-shrink: 0;
+      background: #fff;
+    }
+
+    #right-panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    #right-panel-footer {
+      flex-shrink: 0;
+      border-top: 1px solid #e5e7eb;
+      padding: 10px 12px;
+      background: #fff;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    #right-panel-footer #refine-input {
+      flex: 1;
+      resize: none;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.9rem;
+      min-height: 40px;
+      max-height: 120px;
+      font-family: inherit;
+      outline: none;
+    }
+    #right-panel-footer #refine-input:focus { border-color: #2563eb; }
+
+    #right-panel-footer #btn-refine-send {
+      flex-shrink: 0;
+      padding: 8px 16px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      height: auto;
+    }
+    #right-panel-footer #btn-refine-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* What changed — Stage 4 */
+    #what-changed-card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      cursor: pointer;
+    }
+
+    #what-changed-full ul {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 0.85rem;
+      color: #1a5c4a;
+      line-height: 1.7;
+    }
+    #what-changed-full .wc-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #1a5c4a;
+      margin-bottom: 6px;
+    }
+
+    #what-changed-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: #6b7280;
+    }
+
+    #what-changed-pill button {
+      font-size: 0.75rem;
+      color: #2563eb;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    /* Quick edit — Stage 4 */
+    #quick-edit-section {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+
+    #btn-quick-edit-toggle {
+      background: none;
+      border: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    #quick-edit-fields {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #quick-edit-fields input {
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 0.85rem;
+      font-family: inherit;
+      outline: none;
+    }
+    #quick-edit-fields input:focus { border-color: #2563eb; }
+
+    #btn-apply-quick-edit {
+      align-self: flex-start;
+      padding: 6px 14px;
+      background: #374151;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    /* Coach messages — Stage 4 */
+    #coach-messages {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .coach-msg-user, .coach-msg-ai {
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      line-height: 1.5;
+      max-width: 100%;
+    }
+    .coach-msg-user {
+      background: #dbeafe;
+      align-self: flex-end;
+      text-align: right;
+    }
+    .coach-msg-ai {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      align-self: flex-start;
+    }
+    /* Markdown inside coach-msg-ai */
+    .coach-msg-ai h1, .coach-msg-ai h2, .coach-msg-ai h3 {
+      font-size: 0.88rem; font-weight: 700; color: var(--navy);
+      margin: 6px 0 3px; line-height: 1.4;
+    }
+    .coach-msg-ai p { margin: 3px 0; }
+    .coach-msg-ai ul, .coach-msg-ai ol { padding-left: 16px; margin: 4px 0; }
+    .coach-msg-ai li { margin-bottom: 2px; }
+    .coach-msg-ai strong { color: var(--navy); font-weight: 600; }
+    .coach-msg-ai p:first-child { margin-top: 0; }
+    .coach-msg-ai p:last-child { margin-bottom: 0; }
+
+    /* Update notice in Stage 4 */
+    .coach-update-notice {
+      background: #ecfdf5;
+      border: 1px solid #6ee7b7;
+      color: #065f46;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-align: center;
+      padding: 6px 8px;
+      border-radius: 8px;
+    }
+
+    /* Section progress bar in Stage 4 (during generation) */
+    #stage4-gen-progress {
+      display: none;
+      gap: 6px;
+      margin-bottom: 8px;
+      padding: 0 24px;
+    }
+    #stage4-gen-progress .seg {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 4px;
+      border-radius: 6px;
+      background: #d1d5db;
+      color: #6b7280;
+      transition: background 0.4s ease, color 0.4s ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #stage4-gen-progress .seg.active {
+      background: #388978;
+      color: #fff;
+    }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+      #stage4-container {
+        grid-template-columns: 1fr;
+        height: auto;
+        overflow: auto;
+      }
+      #left-panel {
+        border-right: none;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      #left-panel-body { display: none; }
+      #left-panel-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 16px;
+      }
+      .btn-download-prominent {
+        width: 100%;
+        text-align: center;
+        padding: 12px;
+      }
+      #right-panel { height: 100vh; }
     }
   </style>
 </head>
@@ -607,72 +936,88 @@
     </button>
   </div>
 
-  <!-- Result panel (hidden until generated) -->
-  <div class="card" id="result-panel" style="display:none;">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
-      <div>
-        <h2 style="font-size:17px;font-weight:700;color:var(--navy);margin-bottom:3px;">Your Tailored Resume</h2>
-        <p style="font-size:12px;color:var(--muted);" id="result-subtitle">Saved to history. Download the PDF for the formatted two-column version.</p>
+  <!-- Stage 4: two-panel split screen (shown after generation / edit load) -->
+  <div id="stage4-container">
+
+    <!-- LEFT PANEL: 55% — resume display -->
+    <div id="left-panel">
+      <div id="left-panel-header">
+        <span id="resume-context-label"></span>
+        <button id="btn-download-pdf" class="btn-download-prominent" onclick="downloadPDF()">Download PDF</button>
       </div>
-      <button id="btn-download" onclick="downloadPDF()">
-        ↓ Download PDF
-      </button>
+      <div id="left-panel-body">
+        <!-- Section progress bar — shown during streaming generation -->
+        <div id="stage4-gen-progress">
+          <span class="seg" data-section="SUMMARY">Summary</span>
+          <span class="seg" data-section="EXPERIENCE">Experience</span>
+          <span class="seg" data-section="SKILLS">Skills</span>
+          <span class="seg" data-section="EDUCATION">Education</span>
+        </div>
+        <!-- Iframe preview (Playwright engine only) -->
+        <iframe id="preview-frame" style="display:none; width:100%; height:100%; border:none;" title="Resume preview"></iframe>
+        <!-- Text fallback (always rendered; hidden when iframe is active) -->
+        <div id="resume-text-display"></div>
+      </div>
     </div>
 
-    <!-- HTML preview iframe — shown only when RESUME_PDF_ENGINE=playwright.
-         When active, the iframe renders the same HTML that will be printed to
-         PDF, so what you see here is pixel-identical to the downloaded file. -->
-    <div id="preview-panel" style="display:none;margin-bottom:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <p style="font-size:12px;font-weight:600;color:var(--navy);">
-          Formatted Preview <span style="font-weight:400;color:var(--green);font-size:11px;">● Live — matches the PDF exactly</span>
-        </p>
-        <button style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--light);cursor:pointer;" onclick="togglePreview()">Hide</button>
+    <!-- RIGHT PANEL: 45% — coach -->
+    <div id="right-panel">
+      <div id="right-panel-header">Coach</div>
+      <div id="right-panel-body">
+
+        <!-- What changed card (fresh generation only; hidden on history edit) -->
+        <div id="what-changed-card" style="display:none;">
+          <div id="what-changed-full">
+            <div class="wc-title">What changed in this version</div>
+            <ul id="what-changed-list"></ul>
+          </div>
+          <div id="what-changed-pill" style="display:none;">
+            <span>✓ Changes applied</span>
+            <button id="btn-expand-changes">Show</button>
+          </div>
+        </div>
+
+        <!-- Coach session messages -->
+        <div id="coach-messages"></div>
+
+        <!-- Quick-edit toggle -->
+        <div id="quick-edit-section">
+          <button id="btn-quick-edit-toggle" onclick="toggleQuickEdit()">Make quick changes ▾</button>
+          <div id="quick-edit-fields" style="display:none;">
+            <input id="input-remove" type="text" placeholder="Remove from resume…">
+            <input id="input-add" type="text" placeholder="Add or emphasize…">
+            <button id="btn-apply-quick-edit" onclick="applyQuickEdit()">Apply</button>
+          </div>
+        </div>
+
       </div>
-      <iframe id="resume-preview-frame"
-        style="width:100%;height:11in;border:1px solid var(--border);border-radius:6px;background:white;"
-        title="Resume preview">
-      </iframe>
+
+      <!-- Pinned footer: chat input -->
+      <div id="right-panel-footer">
+        <input type="file" id="refine-file-input" accept=".pdf,.docx" style="display:none" onchange="uploadMasterResume(this)">
+        <textarea id="refine-input" placeholder="Message coach… (Shift+Enter to send)"></textarea>
+        <button id="btn-refine-send" onclick="sendRefine()">Send</button>
+      </div>
     </div>
 
-    <!-- Section progress bar — visible during generation (Item 9) -->
+  </div><!-- /#stage4-container -->
+
+  <!-- Hidden: preserved for backward-compat JS references that may still target these IDs -->
+  <div id="result-panel" style="display:none;">
+    <div id="result-text" style="display:none;"></div>
+    <div id="refine-panel" style="display:none;"></div>
+    <div id="refine-messages" style="display:none;"></div>
+    <div id="refine-upload-status"></div>
+    <div id="preview-panel" style="display:none;"></div>
+    <iframe id="resume-preview-frame" style="display:none;"></iframe>
     <div id="gen-progress" style="display:none;">
       <span class="seg" data-section="SUMMARY">Summary</span>
       <span class="seg" data-section="EXPERIENCE">Experience</span>
       <span class="seg" data-section="SKILLS">Skills</span>
       <span class="seg" data-section="EDUCATION">Education</span>
     </div>
-
-    <div id="result-text"></div>
-
-    <!-- What changed card — shown after generation (Item 10) -->
-    <div id="what-changed-card" style="display:none;">
-      <div class="wc-title">What changed in this version</div>
-      <ul id="what-changed-list"></ul>
-    </div>
-
-    <!-- Inline refinement chat — auto-opens after generation -->
-    <div id="refine-panel" style="display:none;">
-      <div class="refine-header">
-        🤖 AI Resume Coach <span class="live-badge">Live</span>
-      </div>
-      <div id="refine-messages"></div>
-      <div id="refine-upload-status"></div>
-      <div id="quick-edit">
-        <label>Remove from resume</label>
-        <input type="text" id="remove-input" placeholder='e.g. "Remove the Server role"'>
-        <label>Add or emphasize</label>
-        <input type="text" id="add-input" placeholder='e.g. "Add more emphasis on SharePoint"'>
-        <button id="quick-apply-btn" onclick="applyQuickEdit()">Apply Changes</button>
-        <hr class="quick-edit-divider">
-      </div>
-      <div id="refine-input-row">
-        <input type="file" id="refine-file-input" accept=".pdf,.docx" style="display:none" onchange="uploadMasterResume(this)">
-        <button id="btn-refine-upload" title="Upload updated master resume" onclick="document.getElementById('refine-file-input').click()">📎</button>
-        <textarea id="refine-input" rows="2" placeholder="Answer the question or ask anything about your resume… (Shift+Enter to send)"></textarea>
-        <button id="btn-refine-send" onclick="sendRefine()">Send</button>
-      </div>
-    </div>
+    <input type="text" id="remove-input" style="display:none;">
+    <input type="text" id="add-input" style="display:none;">
   </div>
 
 </div>
@@ -828,15 +1173,28 @@
     btn.innerHTML = `<span class="spinner"></span> Generating…`;
     setStep(2);
 
-    // Show result panel immediately so text streams in progressively
-    const resultText = document.getElementById("result-text");
+    // Show stage4 split-screen immediately so text streams in progressively
+    const resultText = document.getElementById("resume-text-display");
     resultText.textContent = "";
-    document.getElementById("result-panel").style.display = "block";
-    document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
+    resultText.style.display = "block";
+    document.getElementById("preview-frame").style.display = "none";
+
+    // Set resume context label (company · role)
+    const contextParts = [];
+    if (company) contextParts.push(company);
+    if (title)   contextParts.push(title);
+    document.getElementById("resume-context-label").textContent = contextParts.join(" · ");
+
+    // Reset state for new generation
+    _whatChangedCollapsed = false;
+    _firstCoachMessageSent = false;
+    document.getElementById("coach-messages").innerHTML = "";
+
+    showStage4();
 
     // Item 9: Reset and show section progress bar
     resetGenProgress();
-    document.getElementById("gen-progress").style.display = "flex";
+    document.getElementById("stage4-gen-progress").style.display = "flex";
 
     // Item 10: Hide what-changed card on new generation
     document.getElementById("what-changed-card").style.display = "none";
@@ -905,14 +1263,15 @@
               }
               currentRecordId = evt.id;
               // Item 9: hide progress bar
-              document.getElementById("gen-progress").style.display = "none";
+              document.getElementById("stage4-gen-progress").style.display = "none";
               // Issue 8: post-process plain-text stream into formatted HTML
               const fullText = resultText.textContent;
               renderResumeText(fullText);
               // Item 10: compute and show what-changed card
               showWhatChanged(fullText, masterContent);
               setStep(3);
-              startRefineChat();
+              // Pass title/company so first coach message is context-aware
+              startRefineChat({ jobTitle: title, company });
               // Try to load the HTML preview (only works when RESUME_PDF_ENGINE=playwright)
               loadPreview(evt.id);
             }
@@ -923,7 +1282,7 @@
     } catch (e) {
       showAlert("alert-box", e.message, "error");
       setStep(1);
-      document.getElementById("result-panel").style.display = "none";
+      document.getElementById("stage4-container").classList.remove("visible");
     } finally {
       btn.disabled = false;
       btn.innerHTML = "Generate Tailored Resume";
@@ -936,12 +1295,9 @@
   // user sees the formatted resume that is pixel-identical to the PDF download.
   // If it returns 501 (engine is libreoffice), silently hide the panel.
 
-  let _previewVisible = true;
-
   async function loadPreview(recordId) {
-    const panel = document.getElementById("preview-panel");
-    const frame = document.getElementById("resume-preview-frame");
-    const subtitle = document.getElementById("result-subtitle");
+    const frame   = document.getElementById("preview-frame");
+    const textDiv = document.getElementById("resume-text-display");
 
     try {
       const probe = await fetch(`/api/tailor/${recordId}/preview`, {
@@ -949,28 +1305,21 @@
         credentials: "include",
       });
       if (!probe.ok) {
-        // 501 = libreoffice engine active — preview not available
-        panel.style.display = "none";
+        // 501 = libreoffice engine active — preview not available; show text fallback
+        frame.style.display = "none";
+        textDiv.style.display = "block";
         return;
       }
     } catch (_) {
-      panel.style.display = "none";
+      frame.style.display = "none";
+      textDiv.style.display = "block";
       return;
     }
 
-    // Preview endpoint is live — load the iframe and update subtitle
+    // Preview endpoint is live — load the iframe, hide the text fallback
     frame.src = `/api/tailor/${recordId}/preview`;
-    panel.style.display = "block";
-    subtitle.textContent = "Saved to history. The preview below matches the PDF exactly.";
-  }
-
-  function togglePreview() {
-    const panel = document.getElementById("preview-panel");
-    const frame = document.getElementById("resume-preview-frame");
-    const btn = panel.querySelector("button");
-    _previewVisible = !_previewVisible;
-    frame.style.display = _previewVisible ? "block" : "none";
-    btn.textContent = _previewVisible ? "Hide" : "Show";
+    frame.style.display = "block";
+    textDiv.style.display = "none";
   }
 
   // ── Refinement chat ────────────────────────────────────────────────────────
@@ -991,30 +1340,89 @@
       .replace(/\n/g, "<br>");
   }
 
+  // ── Stage 4: what-changed pill collapse/expand ────────────────────────────
+
+  let _whatChangedCollapsed = false;
+  let _firstCoachMessageSent = false;
+
+  function collapseWhatChanged() {
+    if (_whatChangedCollapsed) return;
+    _whatChangedCollapsed = true;
+    document.getElementById("what-changed-full").style.display = "none";
+    document.getElementById("what-changed-pill").style.display = "flex";
+  }
+
+  function expandWhatChanged() {
+    _whatChangedCollapsed = false;
+    document.getElementById("what-changed-full").style.display = "block";
+    document.getElementById("what-changed-pill").style.display = "none";
+  }
+
+  // Wire up what-changed card click (collapse on click anywhere in card body)
+  document.addEventListener("DOMContentLoaded", () => {
+    const card = document.getElementById("what-changed-card");
+    if (card) {
+      card.addEventListener("click", (e) => {
+        // If clicking the "Show" button inside the pill, expand
+        if (e.target && e.target.id === "btn-expand-changes") {
+          e.stopPropagation();
+          expandWhatChanged();
+        } else if (!_whatChangedCollapsed) {
+          collapseWhatChanged();
+        }
+      });
+    }
+  });
+
+  // ── Stage 4: quick-edit toggle ────────────────────────────────────────────
+
+  function toggleQuickEdit() {
+    const fields = document.getElementById("quick-edit-fields");
+    const btn = document.getElementById("btn-quick-edit-toggle");
+    const isHidden = fields.style.display === "none";
+    fields.style.display = isHidden ? "flex" : "none";
+    btn.textContent = isHidden ? "Make quick changes ▴" : "Make quick changes ▾";
+  }
+
+  // ── Stage 4: show the split-screen ───────────────────────────────────────
+
+  function showStage4() {
+    document.getElementById("stage4-container").classList.add("visible");
+    document.getElementById("stage4-container").scrollIntoView({ behavior: "smooth" });
+  }
+
+  // ── Message rendering (targets #coach-messages) ───────────────────────────
+
   function addMessage(text, role) {
     const div = document.createElement("div");
-    div.className = "msg " + role;
+    // Map old "coach"/"user" roles to new CSS classes
     if (role === "coach") {
+      div.className = "coach-msg-ai";
       div.innerHTML = renderMarkdown(text);
+    } else if (role === "user") {
+      div.className = "coach-msg-user";
+      div.textContent = text;
     } else {
+      // update-notice / other
+      div.className = "coach-update-notice";
       div.textContent = text;
     }
-    document.getElementById("refine-messages").appendChild(div);
+    document.getElementById("coach-messages").appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "nearest" });
     return div;
   }
 
   function addTypingIndicator() {
     const div = document.createElement("div");
-    div.className = "msg coach";
+    div.className = "coach-msg-ai";
     div.id = "typing-indicator";
     div.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
-    document.getElementById("refine-messages").appendChild(div);
+    document.getElementById("coach-messages").appendChild(div);
     div.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   async function startRefineChat({ jobTitle = "", company = "" } = {}) {
-    document.getElementById("refine-panel").style.display = "block";
+    showStage4();
     addTypingIndicator();
 
     // Build a context-aware first message so the coach response is specific to this role.
@@ -1056,6 +1464,12 @@
     const message = input.value.trim();
     if (!message) return;
 
+    // Collapse what-changed card on first user message
+    if (!_firstCoachMessageSent) {
+      _firstCoachMessageSent = true;
+      collapseWhatChanged();
+    }
+
     const btn = document.getElementById("btn-refine-send");
     btn.disabled = true;
     input.value  = "";
@@ -1089,8 +1503,8 @@
   }
 
   function applyQuickEdit() {
-    const removeInput = document.getElementById("remove-input");
-    const addInput    = document.getElementById("add-input");
+    const removeInput = document.getElementById("input-remove");
+    const addInput    = document.getElementById("input-add");
     const removeValue = removeInput.value.trim();
     const addValue    = addInput.value.trim();
 
@@ -1113,19 +1527,17 @@
 
   function addUpdateNotice() {
     const notice = document.createElement("div");
-    notice.className = "msg update-notice";
-    notice.textContent = "✓ Resume updated above";
-    document.getElementById("refine-messages").appendChild(notice);
+    notice.className = "coach-update-notice";
+    notice.textContent = "✓ Resume updated";
+    document.getElementById("coach-messages").appendChild(notice);
     notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   async function uploadMasterResume(input) {
     const file = input.files[0];
     if (!file) return;
-    const status = document.getElementById("refine-upload-status");
-    const btn = document.getElementById("btn-refine-upload");
-    btn.disabled = true;
-    status.textContent = `Uploading ${file.name}…`;
+    // Show status as a coach message
+    addMessage(`Uploading ${file.name}…`, "coach");
 
     try {
       const fd = new FormData();
@@ -1140,16 +1552,12 @@
         const err = await res.json().catch(() => ({ detail: "Upload failed" }));
         throw new Error(err.detail || "Upload failed");
       }
-      status.textContent = `✓ ${file.name} uploaded — synthesizing…`;
-
       // Auto-synthesize so the coach picks up the new content
-      const synthRes = await apiFetch("/api/master/synthesize", { method: "POST" });
-      status.textContent = "✓ Master resume updated — coach now has the latest version.";
-      setTimeout(() => { status.textContent = ""; }, 5000);
+      await apiFetch("/api/master/synthesize", { method: "POST" });
+      addMessage("✓ Master resume updated — coach now has the latest version.", "coach");
     } catch (e) {
-      status.textContent = `Upload failed: ${e.message}`;
+      addMessage(`Upload failed: ${e.message}`, "coach");
     } finally {
-      btn.disabled = false;
       input.value = "";
     }
   }
@@ -1181,20 +1589,39 @@
       const jobTitleEl = document.getElementById("job-title");
       const companyEl  = document.getElementById("company");
       const jdEl       = document.getElementById("jd");
-      const resultText = document.getElementById("result-text");
 
-      if (jobTitleEl) jobTitleEl.value = record.job_title  || "";
-      if (companyEl)  companyEl.value  = record.company    || "";
+      if (jobTitleEl) jobTitleEl.value = record.job_title       || "";
+      if (companyEl)  companyEl.value  = record.company         || "";
       if (jdEl)       jdEl.value       = record.job_description || "";
 
-      // Populate the tailored content into the result area (Issue 8: use formatter)
-      if (resultText) renderResumeText(record.tailored_content || "");
+      // Set resume context label: "Loaded from May 27 · Company · Role"
+      const dateStr = record.created_at
+        ? new Date(record.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+        : "";
+      const contextParts = ["Loaded from " + (dateStr || "history")];
+      if (record.company)   contextParts.push(record.company);
+      if (record.job_title) contextParts.push(record.job_title);
+      document.getElementById("resume-context-label").textContent = contextParts.join(" · ");
+
+      // Hide what-changed card (not shown for history edits)
+      document.getElementById("what-changed-card").style.display = "none";
+
+      // Clear coach messages (blank slate for history edit)
+      document.getElementById("coach-messages").innerHTML = "";
+      _whatChangedCollapsed = false;
+      _firstCoachMessageSent = false;
+
+      // Populate the tailored content into the resume display (Issue 8: use formatter)
+      const textDisplay = document.getElementById("resume-text-display");
+      textDisplay.style.display = "block";
+      document.getElementById("preview-frame").style.display = "none";
+      renderResumeText(record.tailored_content || "");
 
       // Set the current record ID so the refine chat and PDF download work
       currentRecordId = record.id;
 
-      // Show the result panel
-      document.getElementById("result-panel").style.display = "block";
+      // Show the stage4 split-screen
+      showStage4();
 
       // Advance the step indicator to step 3 (Refine with AI)
       setStep(3);
@@ -1206,8 +1633,6 @@
       // Try to load the HTML preview if the engine supports it
       loadPreview(record.id);
 
-      // Scroll the result panel into view
-      document.getElementById("result-panel").scrollIntoView({ behavior: "smooth" });
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", "Could not load the record: " + e.message, "error");
@@ -1225,7 +1650,7 @@
   ];
 
   function resetGenProgress() {
-    document.querySelectorAll("#gen-progress .seg").forEach(seg => {
+    document.querySelectorAll("#stage4-gen-progress .seg").forEach(seg => {
       seg.classList.remove("active");
     });
   }
@@ -1234,7 +1659,7 @@
     const upper = accumulatedText.toUpperCase();
     SECTION_KEYS.forEach(({ keyword, attr }) => {
       if (upper.includes(keyword)) {
-        const seg = document.querySelector(`#gen-progress .seg[data-section="${attr}"]`);
+        const seg = document.querySelector(`#stage4-gen-progress .seg[data-section="${attr}"]`);
         if (seg) seg.classList.add("active");
       }
     });
@@ -1310,6 +1735,10 @@
       list.appendChild(li);
     });
 
+    // Reset pill state and show the card (full view)
+    _whatChangedCollapsed = false;
+    document.getElementById("what-changed-full").style.display = "block";
+    document.getElementById("what-changed-pill").style.display = "none";
     document.getElementById("what-changed-card").style.display = "block";
   }
 
@@ -1365,7 +1794,7 @@
   }
 
   function renderResumeText(text) {
-    const el = document.getElementById("result-text");
+    const el = document.getElementById("resume-text-display");
     // Switch off pre-wrap now that we're rendering block-level spans,
     // not raw text — pre-wrap would double-space around the span boundaries.
     el.style.whiteSpace = "normal";
@@ -1377,9 +1806,9 @@
 
   async function downloadPDF() {
     if (!currentRecordId) return;
-    const btn = document.getElementById("btn-download");
+    const btn = document.getElementById("btn-download-pdf");
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building PDF…`;
+    btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building…`;
 
     try {
       const company  = document.getElementById("company").value.trim();
@@ -1396,7 +1825,7 @@
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "↓ Download PDF";
+      btn.innerHTML = "Download PDF";
     }
   }
 </script>
