@@ -35,6 +35,14 @@ if SENTRY_DSN:
         traces_sample_rate=0.1,   # 10% of requests traced — adjust as needed
         send_default_pii=False,
     )
+    logging.getLogger(__name__).info(
+        "[startup] Sentry initialized  dsn_prefix=%s",
+        SENTRY_DSN[:20] + "...",
+    )
+else:
+    logging.getLogger(__name__).warning(
+        "[startup] SENTRY_DSN not set — Sentry error reporting disabled"
+    )
 
 # ── App ───────────────────────────────────────────────────────────────────────
 

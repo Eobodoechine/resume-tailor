@@ -32,7 +32,14 @@ def require_admin(ctx: AuthContext = Depends(require_user)) -> AuthContext:
         return ctx
 
     admin = get_admin_client()
-    profile = admin.table("profiles").select("is_admin").eq("id", str(ctx.user.id)).execute()
+    try:
+        profile = admin.table("profiles").select("is_admin").eq("id", str(ctx.user.id)).execute()
+    except Exception as e:
+        logger.error(
+            "[require-admin] DB lookup FAILED  user_id=%s  error=%s",
+            str(ctx.user.id), e, exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Authorization check failed. Please try again.")
     if profile.data and profile.data[0].get("is_admin"):
         logger.debug("[require_admin] OK (is_admin=True)  user=%s", ctx.user.id)
         return ctx
@@ -96,10 +103,17 @@ def approve_request(request: Request, body: ApprovalBody, _ctx: AuthContext = De
     # Update DB FIRST — approved status is the source of truth.
     # If the invite email fails below, the user is still marked approved
     # and can request a magic link via the login page.
-    admin.table("access_requests").update({
-        "status": "approved",
-        "reviewed_at": datetime.now(timezone.utc).isoformat()
-    }).eq("id", str(body.request_id)).execute()
+    try:
+        admin.table("access_requests").update({
+            "status": "approved",
+            "reviewed_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", str(body.request_id)).execute()
+    except Exception as e:
+        logger.error(
+            "[approve] DB status update FAILED  request_id=%s  actor=%s  error=%s",
+            body.request_id, str(_ctx.user.id), e, exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to approve request. Please try again.")
     logger.info("[admin] DB status set to approved  request_id=%s  email=%s", body.request_id, email)
 
     # Send invite — failure is non-fatal since status is already approved
@@ -128,9 +142,9 @@ def approve_request(request: Request, body: ApprovalBody, _ctx: AuthContext = De
             }, on_conflict="email").execute()
             logger.debug("[admin] profile full_name synced  email=%s  full_name=%r", email, full_name)
         except Exception as e:
-            logger.warning(
+            logger.error(
                 "[admin] profile full_name sync failed (non-fatal)  email=%s  error=%s",
-                email, e,
+                email, e, exc_info=True,
             )
 
     return {"message": f"Invite sent to {email}"}

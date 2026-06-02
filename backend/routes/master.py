@@ -273,7 +273,11 @@ Current master resume:
     else:
         visible_reply = reply
         if update_start == -1:
-            logger.debug("[gap-fill] no UPDATE_MASTER_RESUME marker in reply  user=%s", ctx.user.id)
+            logger.warning(
+                "[gap-fill] no UPDATE_MASTER_RESUME marker in reply — master resume NOT updated  "
+                "user=%s  reply_chars=%d  reply_head=%r",
+                ctx.user.id, len(reply), reply[:120],
+            )
         elif update_end == -1:
             logger.warning(
                 "[gap-fill] UPDATE_MASTER_RESUME found but END_UPDATE missing — "

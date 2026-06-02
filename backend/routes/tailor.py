@@ -262,7 +262,9 @@ def _validate_fetch_url(url: str):
     practical bypasses.
     """
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
+    scheme = parsed.scheme
+    if scheme not in {"http", "https"}:
+        logger.warning("[fetch-jd] SSRF blocked — invalid scheme  url=%r  scheme=%r", url, scheme)
         raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
     hostname = parsed.hostname or ""
     if not hostname:
@@ -270,6 +272,7 @@ def _validate_fetch_url(url: str):
     # Reject known internal hostnames
     blocked_hosts = {"localhost", "metadata.google.internal"}
     if hostname.lower() in blocked_hosts:
+        logger.warning("[fetch-jd] SSRF blocked — static hostname  url=%r  host=%r", url, hostname)
         raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
     # Resolve ALL addresses; reject if ANY is internal.
     try:
@@ -462,6 +465,12 @@ async def stream_tailor(request: Request, body: TailorRequest, ctx: AuthContext 
         # for a streaming endpoint; the user can re-trigger the stream to get a
         # fresh record.
         tailored_text = "".join(full_chunks)
+        if not tailored_text.strip() if isinstance(tailored_text, str) else total_chars == 0:
+            logger.warning(
+                "[stream-tailor] WARNING stream completed with empty content — storing empty resume  "
+                "user=%s  record_id=%s  total_chars=%d",
+                user_id, "(pending)", total_chars,
+            )
         try:
             # asyncio.shield() prevents the DB insert from being cancelled if the
             # SSE client disconnects before this point. Without shield, a client
@@ -529,20 +538,28 @@ def get_history(
 
     # Get total count (separate query — Supabase returns count alongside data
     # only when count="exact" is passed; doing it separately keeps the query readable).
-    count_result = db.table("tailored_resumes") \
-        .select("id", count="exact") \
-        .eq("user_id", str(ctx.user.id)) \
-        .execute()
+    try:
+        count_result = db.table("tailored_resumes") \
+            .select("id", count="exact") \
+            .eq("user_id", str(ctx.user.id)) \
+            .execute()
+    except Exception as e:
+        logger.error("[history] DB query FAILED  user=%s  error=%s", str(ctx.user.id), e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load history. Please try again.")
     # Use isinstance so test mocks (MagicMock, not None) don't slip past the guard.
     total = count_result.count if isinstance(count_result.count, int) else 0
     logger.debug("[history] count query returned total=%d  user=%s", total, ctx.user.id)
 
-    result = db.table("tailored_resumes") \
-        .select("id, job_title, company, created_at") \
-        .eq("user_id", str(ctx.user.id)) \
-        .order("created_at", desc=True) \
-        .range(offset, offset + limit - 1) \
-        .execute()
+    try:
+        result = db.table("tailored_resumes") \
+            .select("id, job_title, company, created_at") \
+            .eq("user_id", str(ctx.user.id)) \
+            .order("created_at", desc=True) \
+            .range(offset, offset + limit - 1) \
+            .execute()
+    except Exception as e:
+        logger.error("[history] DB query FAILED  user=%s  error=%s", str(ctx.user.id), e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load history. Please try again.")
 
     # If count came back stale/zero but we still got items, reconcile so the
     # frontend's has_more / "Showing X of Y" pagination math stays sane.
@@ -842,11 +859,16 @@ async def preview_html(
     fall back to the existing PDF blob preview path.
     """
     logger.info(
-        "[preview_html] START  record_id=%s  user=%s  engine=%s",
-        record_id, ctx.user.id, RESUME_PDF_ENGINE,
+        "[preview_html] START  record_id=%s  user=%s  engine=%s  method=%s",
+        record_id, ctx.user.id, RESUME_PDF_ENGINE, request.method,
     )
 
     if RESUME_PDF_ENGINE != "playwright":
+        logger.info(
+            "[preview_html] 501 engine=%s does not support HTML preview — returning 501  "
+            "user=%s  record_id=%s  method=%s",
+            RESUME_PDF_ENGINE, str(ctx.user.id), record_id, request.method,
+        )
         raise HTTPException(
             status_code=501,
             detail="HTML preview is only available when RESUME_PDF_ENGINE=playwright",
