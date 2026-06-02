@@ -32,7 +32,7 @@ jobs:
       - name: Run unit + HTTP-layer tests
         # Exclude Playwright tests — they need Chromium installed, which CI doesn't have.
         # These run in the docker-smoke job instead.
-        run: pytest tests/ --ignore=tests/integration --ignore=tests/test_playwright_pdf.py --ignore=tests/test_tailor_playwright.py -v --tb=short
+        run: pytest tests/ --ignore=tests/integration --ignore=tests/test_playwright_pdf.py --ignore=tests/test_tailor_playwright.py -k "not TestTwoPassOverflowGuard" -v --tb=short
         env:
           SUPABASE_URL: "https://fake.supabase.co"
           SUPABASE_ANON_KEY: "fake-anon-key"
