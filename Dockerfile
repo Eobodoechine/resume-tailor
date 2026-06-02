@@ -39,10 +39,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browser binary (Chromium only — keeps image size down).
-# --with-deps installs all system-level dependencies Chromium needs on Debian/Ubuntu.
-# This supersedes the manual apt list above for Playwright-specific deps.
+# System dependencies (libnss3, libatk*, etc.) are already installed in the
+# apt-get block above — do NOT use --with-deps here; it pulls ttf-unifont and
+# ttf-ubuntu-font-family which no longer exist in Debian Trixie (python:3.11-slim).
 # Must run after pip install so the playwright CLI is available.
-RUN playwright install --with-deps chromium
+RUN playwright install chromium
 
 # Copy backend and frontend
 COPY backend/ ./backend/

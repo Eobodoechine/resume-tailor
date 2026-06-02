@@ -174,10 +174,14 @@ async def html_to_pdf(
     except RuntimeError:
         raise   # already logged above — let it propagate cleanly
     except Exception as exc:
+        # Log the full error on one line (Render log search truncates at newlines).
+        # Playwright BrowserType.launch errors are multiline — squash to single line
+        # so the "Executable doesn't exist" or resource-limit reason is visible.
+        full_msg = str(exc).replace("\n", " | ")
         logger.error(
-            "[playwright_pdf] unexpected error  error=%s\n%s",
-            exc, traceback.format_exc(),
+            "[playwright_pdf] unexpected error  error=%s  traceback=%s",
+            full_msg, traceback.format_exc().replace("\n", " | "),
         )
         raise RuntimeError(
-            f"Playwright PDF generation failed unexpectedly: {exc}"
+            f"Playwright PDF generation failed unexpectedly: {full_msg}"
         ) from exc
