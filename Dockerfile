@@ -44,19 +44,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ttf-ubuntu-font-family which no longer exist in Debian Trixie (python:3.11-slim).
 # Must run after pip install so the playwright CLI is available.
 RUN playwright install chromium
-
-# ── Smoke test: verify Chromium actually launches ─────────────────────────────
-# Runs at build time, so a BrowserType.launch failure breaks the build here
-# instead of silently breaking PDF generation after the container is deployed.
-# --no-sandbox     required in all Linux containers (no user namespaces).
-# --disable-dev-shm-usage  use /tmp instead of the 64 MB /dev/shm at build time.
-# --disable-gpu    no GPU in headless build environments.
-RUN python -c "\
-from playwright.sync_api import sync_playwright; \
-p = sync_playwright().start(); \
-b = p.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']); \
-b.close(); p.stop(); \
-print('smoke: chromium launch OK')"
+# NOTE: Chromium launch smoke test belongs in CI (docker run), NOT here.
+# docker build runs in a restricted sandbox without the kernel capabilities
+# Chrome needs — BrowserType.launch() reliably fails during build even with
+# --no-sandbox. The CI docker-smoke job runs the check in a real container.
 
 # Copy backend and frontend
 COPY backend/ ./backend/
