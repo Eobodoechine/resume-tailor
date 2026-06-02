@@ -135,8 +135,9 @@ jobs:
             -e ADMIN_EMAIL=admin@test.com \
             -e ENV=development \
             resume-tailor:smoke \
-            python -m pytest backend/tests/test_playwright_pdf.py \
-              backend/tests/test_tailor_playwright.py \
-              backend/tests/test_fde_html.py::TestTwoPassOverflowGuard \
-              --ignore=backend/tests/integration \
-              -v --tb=short 2>&1
+            /bin/sh -c "pip install pytest pytest-asyncio httpx -q && \
+              python -m pytest backend/tests/test_playwright_pdf.py \
+                backend/tests/test_tailor_playwright.py \
+                backend/tests/test_fde_html.py::TestTwoPassOverflowGuard \
+                --ignore=backend/tests/integration \
+                -v --tb=short"
