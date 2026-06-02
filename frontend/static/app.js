@@ -160,8 +160,7 @@ async function apiDownload(path, suggestedFilename) {
   console.log(`[download v8]   Content-Type         : ${res.headers.get("Content-Type")}`);
   console.log(`[download v8]   Content-Disposition  : ${res.headers.get("Content-Disposition")}`);
   if (!res.headers.get("Content-Disposition")) {
-    console.warn(`[download v8]   ⚠ Content-Disposition is null — BaseHTTPMiddleware` +
-      ` stripped it (expected — URL-path method doesn't need it)`);
+    console.warn(`[download v8]   ⚠ Content-Disposition is null — filename will be derived from URL path`);
   }
 
   if (res.status === 401) {
@@ -201,7 +200,7 @@ async function apiDownload(path, suggestedFilename) {
   }
   a.style.display = "none";
   document.body.appendChild(a);
-  console.log(`[download v8]    a.click() firing — GET will start LibreOffice on server`);
+  console.log(`[download v8]    a.click() firing — GET will generate PDF via Playwright (RESUME_PDF_ENGINE=playwright)`);
   a.click();
   setTimeout(() => {
     if (a.parentNode) a.parentNode.removeChild(a);

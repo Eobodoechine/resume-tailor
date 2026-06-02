@@ -72,6 +72,12 @@
   // skip the login form and go straight to the dashboard.
   if (isLoggedIn()) window.location.href = "/dashboard";
 
+  // T1.7 — dashboard.html redirects here with ?error= when a magic link is
+  // expired or invalid.  Show the message immediately so the user knows why
+  // they landed back on the login page.
+  const _errParam = new URLSearchParams(window.location.search).get("error");
+  if (_errParam) showAlert("alert-box", _errParam, "error");
+
   function showTab(tab) {
     document.getElementById("panel-login").style.display   = tab === "login"   ? "block" : "none";
     document.getElementById("panel-request").style.display = tab === "request" ? "block" : "none";

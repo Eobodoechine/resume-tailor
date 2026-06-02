@@ -98,6 +98,17 @@
     // Show a brief loading message so the page doesn't look broken
     document.getElementById("greeting").textContent = "Signing you in…";
     // Stop here — app.js handleMagicLinkCallback() handles the redirect
+  } else if (window.location.hash.includes("error_code=")) {
+    // Supabase redirects here on magic-link failure (e.g. expired link) with
+    // error params in the URL hash: #error=access_denied&error_code=otp_expired
+    // The user sees a blank login page otherwise — show a clear message (T1.7).
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const code   = params.get("error_code") || "";
+    let   msg    = "Your sign-in link is invalid. Please request a new one.";
+    if (code === "otp_expired") {
+      msg = "Your sign-in link has expired. Please request a new one.";
+    }
+    window.location.href = "/?error=" + encodeURIComponent(msg);
   } else {
     requireAuth();
     (async () => { await loadDashboard(); })();

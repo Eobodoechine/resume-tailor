@@ -100,6 +100,10 @@ class SecurityHeadersMiddleware:
                 # All other routes use 'none' to block clickjacking.
                 is_preview = "/api/tailor/" in path and path.endswith("/preview")
                 frame_ancestors = "'self'" if is_preview else "'none'"
+                # Preview endpoint embeds Liberation Sans as base64 data: URIs.
+                # Without data: in font-src the browser blocks them and the resume
+                # body fails to render (header loads but body is blank — T8.2).
+                font_src = "'self' data: https://fonts.gstatic.com" if is_preview else "https://fonts.gstatic.com"
                 headers.extend([
                     (
                         b"content-security-policy",
@@ -111,7 +115,7 @@ class SecurityHeadersMiddleware:
                             "script-src 'self' https://cdnjs.cloudflare.com 'unsafe-inline'; "
                             # 'unsafe-inline' for styles: inline style= attributes on HTML elements.
                             "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
-                            "font-src https://fonts.gstatic.com; "
+                            f"font-src {font_src}; "
                             "connect-src 'self'; "
                             "img-src 'self' data:; "
                             f"frame-ancestors {frame_ancestors}; "

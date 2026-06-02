@@ -95,27 +95,32 @@ CONTENT RULES:
   "CoStar", "Oracle E-Business Suite (EBS)" not "Oracle ERP". When a tool name appears multiple
   times across files, keep the most complete version.
 
-STRICT OUTPUT FORMAT:
+STRICT OUTPUT FORMAT — write sections in EXACTLY this order:
 
 1. Header (first lines, before any section):
 {contact_block}
 
-2. Section headers: EXACTLY these words in ALL CAPS on their own line:
-   SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (only if present)
+2. SUMMARY (3–4 sentences max)
 
-3. EXPERIENCE section:
-   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
-   - NO sub-section headers inside a role — only bullet points
-   - Every bullet starts with "•"
-
-4. SKILLS section — CRITICAL:
+3. SKILLS — write this BEFORE EXPERIENCE to ensure it is never truncated:
    - Each category on ONE line: Category Name: item1, item2, item3
    - Example: Systems & Tools: CoStar Real Estate Manager, Oracle E-Business Suite (EBS), Coupa, Power Automate
    - Do NOT write multi-line paragraphs for skills
 
-5. EDUCATION:
+4. EDUCATION — write this BEFORE EXPERIENCE:
    - Only actual degrees from the resume: Degree | School | Year
    - If no formal degree exists in the source material, omit EDUCATION entirely
+
+5. EXPERIENCE (the longest section — write last so token budget doesn't cut earlier sections):
+   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
+   - NO sub-section headers inside a role — only bullet points
+   - Every bullet starts with "•"
+   - Limit to 4–6 bullets per role — the most impactful ones only
+
+6. CERTIFICATIONS and PROJECTS — only if present in source material
+
+Section headers must be EXACTLY these words in ALL CAPS on their own line:
+SUMMARY, SKILLS, EDUCATION, EXPERIENCE, CERTIFICATIONS, PROJECTS
 
 Contact info to include at the top:
 {contact_block}
@@ -123,7 +128,7 @@ Contact info to include at the top:
 Resume files to synthesize:
 {combined}
 
-Output the complete master resume now, following the STRICT OUTPUT FORMAT above:"""
+Output the complete master resume now, in the order: Header → SUMMARY → SKILLS → EDUCATION → EXPERIENCE → CERTIFICATIONS → PROJECTS:"""
 
     t0 = time.monotonic()
     message = client.messages.create(

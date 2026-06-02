@@ -896,15 +896,17 @@
       <input type="url" id="jd-url-input" placeholder="Paste job listing URL — LinkedIn, Greenhouse, Lever...">
       <button class="btn-fetch" id="btn-fetch" onclick="fetchJD()">Fetch Job</button>
     </div>
+    <!-- UX: fetch-specific alerts appear here, directly below the URL input (not at page top) -->
+    <div id="fetch-alert"></div>
     <p style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;">
       Works best with Greenhouse, Lever, and company career pages. <strong>LinkedIn requires a login</strong> — paste the text instead below.
     </p>
 
     <!-- Job confirmation card (shown after successful fetch) -->
     <div id="jd-confirm-card" style="display:none;">
-      <div class="confirm-header">
-        <div class="confirm-check">✓</div>
-        <div class="confirm-title">Job fetched successfully</div>
+      <div class="confirm-header" id="jd-confirm-header">
+        <div class="confirm-check" id="jd-confirm-check">✓</div>
+        <div class="confirm-title" id="jd-confirm-title">Job fetched successfully</div>
       </div>
       <div class="confirm-meta" id="confirm-meta-text"></div>
       <div class="confirm-preview" id="confirm-preview-text"></div>
@@ -1088,7 +1090,7 @@
     return { role, company, preview };
   }
 
-  function showConfirmCard(jdText) {
+  function showConfirmCard(jdText, warning) {
     const { role, company, preview } = parseJobMeta(jdText);
 
     // Auto-populate fields if they were empty
@@ -1106,6 +1108,30 @@
 
     document.getElementById("confirm-meta-text").innerHTML  = metaHtml;
     document.getElementById("confirm-preview-text").textContent = preview;
+
+    // UX: if the content doesn't look like a job listing, show warning state on
+    // the card instead of green "✓ Job fetched successfully". The flow still
+    // works — user can generate anyway or paste manually.
+    const header   = document.getElementById("jd-confirm-header");
+    const check    = document.getElementById("jd-confirm-check");
+    const title    = document.getElementById("jd-confirm-title");
+    const fetchAlert = document.getElementById("fetch-alert");
+    if (warning) {
+      header.style.background = "#fffbeb";
+      header.style.borderColor = "#f59e0b";
+      check.textContent  = "⚠";
+      check.style.color  = "#d97706";
+      title.textContent  = "URL fetched — content may not be a job listing";
+      showAlert("fetch-alert", warning, "warning");
+    } else {
+      header.style.background = "";
+      header.style.borderColor = "";
+      check.textContent  = "✓";
+      check.style.color  = "";
+      title.textContent  = "Job fetched successfully";
+      fetchAlert.innerHTML = "";
+    }
+
     document.getElementById("jd-confirm-card").style.display = "block";
 
     // Hide the standalone Generate button while card is visible
@@ -1146,10 +1172,9 @@
       // Store fetched text in the hidden textarea so getJDText() picks it up
       document.getElementById("jd-fetched").value = res.text;
       jdMode = "fetched";
-      showConfirmCard(res.text);
-      if (res.warning) {
-        showAlert("alert-box", "⚠️ " + res.warning, "warning");
-      }
+      showConfirmCard(res.text, res.warning || null);
+      // Clear any stale fetch-level alert
+      document.getElementById("fetch-alert").innerHTML = "";
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
