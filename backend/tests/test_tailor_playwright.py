@@ -47,12 +47,16 @@ def client(app):
 
 @pytest.fixture
 def db_mock():
-    sc = sys.modules["services.supabase_client"]
+    # routes/tailor.py binds `get_client` by name at import time
+    # (`from services.supabase_client import get_client`), so patching the
+    # source module attribute has no effect.  Patch the already-bound name in
+    # the routes.tailor namespace instead.
+    import routes.tailor as m
     db    = MagicMock()
     admin = MagicMock()
-    sc.get_client.return_value    = db
-    sc.get_admin_client.return_value = admin
-    return db, admin
+    with patch.object(m, "get_client", return_value=db), \
+         patch.object(m, "get_admin_client", return_value=admin):
+        yield db, admin
 
 
 def _wire_record(db, record_id, company="Acme", job_title="Engineer"):
@@ -174,7 +178,11 @@ class TestDownloadPdfEngineSwitch:
 
         fake_pdf = b"%PDF-1.4" + b"x" * 5000
         html_to_pdf_mock = AsyncMock(return_value=fake_pdf)
-        with patch("routes.tailor.html_to_pdf", html_to_pdf_mock):
+        # html_to_pdf is lazily imported inside download_pdf() via
+        # `from renderers.playwright_pdf import html_to_pdf`, so patch the
+        # attribute on the source module — not routes.tailor (which has no
+        # module-level html_to_pdf binding).
+        with patch("renderers.playwright_pdf.html_to_pdf", html_to_pdf_mock):
             r = client.get(f"/api/tailor/{rid}/pdf")
 
         assert r.status_code == 200
@@ -214,7 +222,7 @@ class TestDownloadPdfEngineSwitch:
         get_renderer_mock = MagicMock()
         monkeypatch.setattr(m, "get_renderer", get_renderer_mock)
 
-        with patch("routes.tailor.html_to_pdf", AsyncMock(return_value=b"%PDF" + b"x" * 5000)):
+        with patch("renderers.playwright_pdf.html_to_pdf", AsyncMock(return_value=b"%PDF" + b"x" * 5000)):
             client.get(f"/api/tailor/{rid}/pdf")
 
         get_renderer_mock.assert_not_called()
