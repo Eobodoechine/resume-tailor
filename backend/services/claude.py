@@ -128,7 +128,7 @@ Output the complete master resume now, following the STRICT OUTPUT FORMAT above:
     t0 = time.monotonic()
     message = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=4000,
+        max_tokens=8000,   # raised from 4000 — EXPERIENCE alone fills 4k, leaving no room for SKILLS/EDUCATION
         messages=[{"role": "user", "content": prompt}],
         timeout=API_TIMEOUT,
     )

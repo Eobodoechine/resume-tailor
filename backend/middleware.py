@@ -96,6 +96,10 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
                 _log_headers("AFTER  call_next (before SecurityHeaders adds)", path, headers)
+                # Preview responses are loaded inside an iframe on the same origin.
+                # All other routes use 'none' to block clickjacking.
+                is_preview = "/api/tailor/" in path and path.endswith("/preview")
+                frame_ancestors = "'self'" if is_preview else "'none'"
                 headers.extend([
                     (
                         b"content-security-policy",
@@ -110,7 +114,7 @@ class SecurityHeadersMiddleware:
                             "font-src https://fonts.gstatic.com; "
                             "connect-src 'self'; "
                             "img-src 'self' data:; "
-                            "frame-ancestors 'none'; "
+                            f"frame-ancestors {frame_ancestors}; "
                             "base-uri 'self'; "
                             "form-action 'self';"
                         ).encode("latin-1"),
