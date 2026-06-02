@@ -81,83 +81,137 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     name = profile.get("full_name", "")
     contact_block = _build_contact_block(profile)
 
-    prompt = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
-Your job is to synthesize them into a single, comprehensive MASTER RESUME in structured plain text.
-
-CONTENT RULES:
+    content_rules = f"""CONTENT RULES:
+- The resume files may use any section names (Work History, Employment, Skills & Tools, etc.)
+  Read them semantically — extract meaning, not just matching headers.
 - Include ALL experience, skills, education, certifications, and achievements found across all files
 - Remove duplicates but keep the most detailed version of each entry
 - Do NOT invent or embellish anything — only use what is explicitly stated
 - Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
 - PRESERVE EXACT TOOL AND SYSTEM NAMES as they appear in the source files — do not normalize,
-  abbreviate, or paraphrase. ATS systems match on exact strings. Write "CBRE Columbia™ Tax
-  Management Platform" not "tax software", "CoStar Real Estate Manager Offline Module" not
-  "CoStar", "Oracle E-Business Suite (EBS)" not "Oracle ERP". When a tool name appears multiple
-  times across files, keep the most complete version.
+  abbreviate, or paraphrase. ATS systems match on exact strings.
+  When a tool name appears multiple times across files, keep the most complete version."""
 
-STRICT OUTPUT FORMAT — write sections in EXACTLY this order:
+    # ── Pass 1: compact sections (SUMMARY + SKILLS + EDUCATION) ──────────────
+    # These are short — they don't need a large token budget.  Writing them
+    # first in a dedicated call guarantees they are never crowded out by
+    # EXPERIENCE's length.
+    prompt_compact = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
 
-1. Header (first lines, before any section):
+{content_rules}
+
+Your task for this call: extract ONLY the SUMMARY, SKILLS, and EDUCATION content.
+Do NOT write any job/role entries — those will be handled separately.
+
+OUTPUT FORMAT (write only these sections, in this order):
+
 {contact_block}
 
-2. SUMMARY (3–4 sentences max)
+SUMMARY
+[3–4 sentence professional summary drawn from the source material]
 
-3. SKILLS — write this BEFORE EXPERIENCE to ensure it is never truncated:
-   - Each category on ONE line: Category Name: item1, item2, item3
-   - Example: Systems & Tools: CoStar Real Estate Manager, Oracle E-Business Suite (EBS), Coupa, Power Automate
-   - Do NOT write multi-line paragraphs for skills
+SKILLS
+[Each skill category on ONE line: Category Name: item1, item2, item3
+ Do NOT write multi-line paragraphs.]
 
-4. EDUCATION — write this BEFORE EXPERIENCE:
-   - Only actual degrees from the resume: Degree | School | Year
-   - If no formal degree exists in the source material, omit EDUCATION entirely
+EDUCATION
+[Only actual degrees: Degree | School | Year
+ Omit this section entirely if no formal degree exists in the source material.]
 
-5. EXPERIENCE (the longest section — write last so token budget doesn't cut earlier sections):
-   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
-   - NO sub-section headers inside a role — only bullet points
-   - Every bullet starts with "•"
-   - Limit to 4–6 bullets per role — the most impactful ones only
-
-6. CERTIFICATIONS and PROJECTS — only if present in source material
-
-Section headers must be EXACTLY these words in ALL CAPS on their own line:
-SUMMARY, SKILLS, EDUCATION, EXPERIENCE, CERTIFICATIONS, PROJECTS
-
-Contact info to include at the top:
-{contact_block}
-
-Resume files to synthesize:
+Resume files:
 {combined}
 
-Output the complete master resume now, in the order: Header → SUMMARY → SKILLS → EDUCATION → EXPERIENCE → CERTIFICATIONS → PROJECTS:"""
+Output the header, SUMMARY, SKILLS, and EDUCATION now:"""
 
     t0 = time.monotonic()
-    message = client.messages.create(
+    msg_compact = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=8000,   # raised from 4000 — EXPERIENCE alone fills 4k, leaving no room for SKILLS/EDUCATION
-        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt_compact}],
         timeout=API_TIMEOUT,
     )
-    text = message.content[0].text
+    compact_text = msg_compact.content[0].text
     logger.info(
-        "claude[synthesize] input=%d output=%d ms=%d chars=%d",
-        message.usage.input_tokens,
-        message.usage.output_tokens,
+        "claude[synthesize:compact] input=%d output=%d ms=%d chars=%d",
+        msg_compact.usage.input_tokens,
+        msg_compact.usage.output_tokens,
         int((time.monotonic() - t0) * 1000),
-        len(text),
+        len(compact_text),
     )
-
-    # Truncation guard — if output hits max_tokens the resume was cut mid-content
-    if message.usage.output_tokens >= 4000:
+    if msg_compact.usage.output_tokens >= 1900:
         logger.warning(
-            "synthesize: output hit max_tokens — likely TRUNCATED  "
-            "output_tokens=%d  tail=%r",
-            message.usage.output_tokens, text[-200:],
+            "synthesize: compact pass hit token limit — SUMMARY/SKILLS/EDUCATION may be truncated"
+            "  output_tokens=%d", msg_compact.usage.output_tokens,
         )
+
+    # ── Pass 2: EXPERIENCE + CERTIFICATIONS + PROJECTS ────────────────────────
+    # This pass gets the full 8000-token budget for the longest section.
+    # We tell it what compact_text already captured so it doesn't double-count.
+    prompt_experience = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
+
+{content_rules}
+
+A previous step already extracted this person's SUMMARY, SKILLS, and EDUCATION:
+
+--- ALREADY CAPTURED ---
+{compact_text}
+--- END ALREADY CAPTURED ---
+
+Your task for this call: extract ONLY the work/role EXPERIENCE content (and CERTIFICATIONS
+or PROJECTS if present). Do NOT repeat the summary, skills, or education.
+
+The source files may call this section anything — "Work History", "Employment",
+"Professional Experience", "Consulting Experience", "Freelance", etc.
+Extract all of it, regardless of how it is labelled.
+
+OUTPUT FORMAT:
+
+EXPERIENCE
+[Each role on its own header line: Job Title | Company Name | Month Year – Month Year
+ Then bullet points starting with "•" — the most impactful ones only, 4–6 per role.]
+
+CERTIFICATIONS
+[Only if present — omit section entirely if not]
+
+PROJECTS
+[Only if present — omit section entirely if not]
+
+Resume files:
+{combined}
+
+Output the EXPERIENCE section (and CERTIFICATIONS / PROJECTS if present) now:"""
+
+    t1 = time.monotonic()
+    msg_exp = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt_experience}],
+        timeout=API_TIMEOUT,
+    )
+    experience_text = msg_exp.content[0].text
+    logger.info(
+        "claude[synthesize:experience] input=%d output=%d ms=%d chars=%d",
+        msg_exp.usage.input_tokens,
+        msg_exp.usage.output_tokens,
+        int((time.monotonic() - t1) * 1000),
+        len(experience_text),
+    )
+    if msg_exp.usage.output_tokens >= 7900:
+        logger.warning(
+            "synthesize: experience pass hit token limit — EXPERIENCE may be truncated  "
+            "output_tokens=%d  tail=%r",
+            msg_exp.usage.output_tokens, experience_text[-200:],
+        )
+
+    # ── Assemble in traditional resume order ──────────────────────────────────
+    # compact_text  = Header + SUMMARY + SKILLS + EDUCATION
+    # experience_text = EXPERIENCE + optional CERTIFICATIONS/PROJECTS
+    # Traditional order: Header → SUMMARY → EXPERIENCE → SKILLS → EDUCATION → rest
+    text = compact_text.rstrip() + "\n\n" + experience_text.strip()
 
     # Structural summary — tells you exactly what made it into the master
     sections = [h for h in ("SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION", "CERTIFICATIONS", "PROJECTS")
                 if h in text]
-    # Role headers use "Title | Company | Dates" format (≥2 pipes per the prompt)
     role_lines = [ln for ln in text.splitlines() if ln.count("|") >= 2]
     logger.info(
         "synthesize: OUTPUT STRUCTURE  sections=%s  roles=%d  chars=%d",
@@ -169,8 +223,12 @@ Output the complete master resume now, in the order: Header → SUMMARY → SKIL
         )
     elif len(role_lines) == 0:
         logger.warning(
-            "synthesize: EXPERIENCE section present but 0 pipe-delimited role headers detected  "
-            "check format or prompt compliance"
+            "synthesize: EXPERIENCE section present but 0 pipe-delimited role headers detected"
+        )
+    if msg_exp.usage.output_tokens < 7900 and len(role_lines) == 1:
+        logger.warning(
+            "synthesize: suspicious role count — roles=1  "
+            "check source files for duplicates or incomplete content"
         )
 
     return text

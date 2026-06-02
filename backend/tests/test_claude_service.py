@@ -87,52 +87,63 @@ class TestSynthesisCapping:
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_returns_claude_text(self, mock_client):
-        """Return value is the text from the first Claude content block."""
-        mock_client.messages.create.return_value = _fake_message("MY MASTER RESUME")
+        """
+        Result must combine both passes (compact + experience).
+        Two-pass synthesis: compact call → SUMMARY/SKILLS/EDUCATION,
+        experience call → EXPERIENCE.  Combined text is returned.
+        """
+        mock_client.messages.create.side_effect = [
+            _fake_message("COMPACT_SECTIONS"),
+            _fake_message("EXPERIENCE_SECTION"),
+        ]
         result = _real_claude_mod.synthesize_master_resume(["Some text"], PROFILE)
-        assert result == "MY MASTER RESUME"
+        assert "COMPACT_SECTIONS" in result
+        assert "EXPERIENCE_SECTION" in result
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_sends_single_user_message(self, mock_client):
-        """synthesize_master_resume must use a single user turn, not a conversation."""
+        """Each API call must use a single user turn, not a conversation."""
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["Resume text"], PROFILE)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert len(call_kwargs["messages"]) == 1
-        assert call_kwargs["messages"][0]["role"] == "user"
+        # Two calls total (compact pass + experience pass)
+        assert mock_client.messages.create.call_count == 2
+        for call in mock_client.messages.create.call_args_list:
+            kwargs = call[1]
+            assert len(kwargs["messages"]) == 1
+            assert kwargs["messages"][0]["role"] == "user"
 
     @patch.object(_real_claude_mod, "client")
     def test_timeout_passed_to_api(self, mock_client):
-        """API call must carry the timeout so slow responses don't hang forever."""
+        """Both API calls must carry the timeout."""
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert "timeout" in call_kwargs
-        assert call_kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
+        for call in mock_client.messages.create.call_args_list:
+            kwargs = call[1]
+            assert "timeout" in kwargs
+            assert kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_max_tokens_is_8000(self, mock_client):
         """
-        Synthesis must request at least 8000 output tokens.
+        The EXPERIENCE pass must request at least 8000 output tokens so it
+        can write all roles without truncation.  The compact pass (SUMMARY +
+        SKILLS + EDUCATION) uses a smaller 2000-token budget — that is fine
+        because those sections are short.
 
-        In the June 2 production test (T5.4), max_tokens=4000 caused Claude to
-        stop mid-bullet in the EXPERIENCE section — SKILLS and EDUCATION were
-        never written. The structural log confirmed: output_tokens=4000,
-        sections=['SUMMARY','EXPERIENCE'] only.
-
-        This test pins the value so a future accidental regression is caught
-        before it ships.
+        This test pins the experience-pass value so a future accidental
+        regression is caught before it ships.
         """
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["Resume content"], PROFILE)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs.get("max_tokens", 0) >= 8000, (
-            f"max_tokens={call_kwargs.get('max_tokens')} — "
-            "4000 truncates synthesis before SKILLS/EDUCATION are written; "
-            "must be >= 8000"
+        # Second call is the experience pass — must have the large budget
+        assert mock_client.messages.create.call_count == 2
+        exp_kwargs = mock_client.messages.create.call_args_list[1][1]
+        assert exp_kwargs.get("max_tokens", 0) >= 8000, (
+            f"experience pass max_tokens={exp_kwargs.get('max_tokens')} — "
+            "must be >= 8000 to avoid truncating long EXPERIENCE sections"
         )
 
 
