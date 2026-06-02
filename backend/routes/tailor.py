@@ -824,7 +824,7 @@ async def _fetch_record_and_profile(
     return record, profile
 
 
-@router.get("/{record_id}/preview")
+@router.api_route("/{record_id}/preview", methods=["GET", "HEAD"])
 @limiter.limit("60/minute")
 async def preview_html(
     request: Request,
