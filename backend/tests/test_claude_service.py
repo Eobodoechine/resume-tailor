@@ -112,6 +112,29 @@ class TestSynthesisCapping:
         assert "timeout" in call_kwargs
         assert call_kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
 
+    @patch.object(_real_claude_mod, "client")
+    def test_synthesis_max_tokens_is_8000(self, mock_client):
+        """
+        Synthesis must request at least 8000 output tokens.
+
+        In the June 2 production test (T5.4), max_tokens=4000 caused Claude to
+        stop mid-bullet in the EXPERIENCE section — SKILLS and EDUCATION were
+        never written. The structural log confirmed: output_tokens=4000,
+        sections=['SUMMARY','EXPERIENCE'] only.
+
+        This test pins the value so a future accidental regression is caught
+        before it ships.
+        """
+        mock_client.messages.create.return_value = _fake_message()
+        _real_claude_mod.synthesize_master_resume(["Resume content"], PROFILE)
+
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs.get("max_tokens", 0) >= 8000, (
+            f"max_tokens={call_kwargs.get('max_tokens')} — "
+            "4000 truncates synthesis before SKILLS/EDUCATION are written; "
+            "must be >= 8000"
+        )
+
 
 # ── DeprecationWarning on sync stream_tailor_resume ──────────────────────────
 

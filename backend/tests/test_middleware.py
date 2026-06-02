@@ -169,3 +169,31 @@ class TestSecurityHeadersMiddleware:
     def test_referrer_policy(self):
         resp = self._get()
         assert resp.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    def test_frame_ancestors_none_for_regular_routes(self):
+        """All normal routes must block iframe embedding to prevent clickjacking."""
+        csp = self._get("/api/test").headers["content-security-policy"]
+        assert "frame-ancestors 'none'" in csp
+
+    def test_frame_ancestors_self_for_preview_route(self):
+        """
+        /api/tailor/{id}/preview is loaded inside an iframe in the Stage 4 left
+        panel.  Its CSP must say frame-ancestors 'self' so the same-origin iframe
+        can render it.  This was T8.2 in the June 2 test run — shipped broken
+        because we only checked the header was *present*, not its value.
+        """
+        app = _make_app(SecurityHeadersMiddleware,
+                        route_path="/api/tailor/abc123/preview")
+        client = TestClient(app)
+        csp = client.get("/api/tailor/abc123/preview").headers["content-security-policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "frame-ancestors 'none'" not in csp
+
+    def test_non_preview_tailor_route_still_denies_framing(self):
+        """Other /api/tailor/* routes (stream, pdf, refine) must keep 'none'."""
+        for path in ["/api/tailor/abc/pdf", "/api/tailor/abc/refine",
+                     "/api/tailor/abc/stream"]:
+            app = _make_app(SecurityHeadersMiddleware, route_path=path)
+            csp = TestClient(app).get(path).headers["content-security-policy"]
+            assert "frame-ancestors 'none'" in csp, \
+                f"{path} should deny framing but got: {csp}"
