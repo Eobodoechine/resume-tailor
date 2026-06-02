@@ -151,6 +151,11 @@ class SlidingSessionMiddleware:
 
         session_token = _parse_cookies(scope).get(COOKIE_NAME)
         if not session_token:
+            logger.debug(
+                "[session-middleware] no session cookie  path=%s  method=%s",
+                scope.get("path", ""),
+                scope.get("method", ""),
+            )
             await self.app(scope, receive, send)
             return
 

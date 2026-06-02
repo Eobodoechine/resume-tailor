@@ -139,6 +139,13 @@ def text_to_resume_data(text: str, profile: dict) -> ResumeData:
         len(data["certifications"] or []), len(data["training"] or []),
         len(generic_main), len(generic_sidebar), len(data["summary"] or ""),
     )
+    role_count = len(data["experience"])
+    if role_count < 2:
+        logger.warning(
+            "[parser] suspicious role count — possible truncation or parse failure  "
+            "roles=%d  input_chars=%d",
+            role_count, len(text),
+        )
     return data
 
 

@@ -35,7 +35,11 @@ def request_access(request: Request, body: AccessRequestBody):
     logger.info("[request-access] email=%s full_name=%r", email, body.full_name or "")
 
     # Check if already approved / already requested
-    existing = admin.table("access_requests").select("*").eq("email", email).execute()
+    try:
+        existing = admin.table("access_requests").select("*").eq("email", email).execute()
+    except Exception as e:
+        logger.error("[request-access] DB select FAILED  email=%s  error=%s", email, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
     if existing.data:
         status = existing.data[0]["status"]
         logger.info("[request-access] existing record found  email=%s  status=%s", email, status)
@@ -48,12 +52,16 @@ def request_access(request: Request, body: AccessRequestBody):
             raise HTTPException(status_code=403, detail="Your access request was not approved.")
 
     # Insert new request
-    admin.table("access_requests").insert({
-        "email": email,
-        "full_name": body.full_name,
-        "reason": body.reason,
-        "status": "pending"
-    }).execute()
+    try:
+        admin.table("access_requests").insert({
+            "email": email,
+            "full_name": body.full_name,
+            "reason": body.reason,
+            "status": "pending"
+        }).execute()
+    except Exception as e:
+        logger.error("[request-access] DB insert FAILED  email=%s  error=%s", email, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
     logger.info("[request-access] new request inserted  email=%s", email)
 
     # Notify admin of the new access request — non-fatal if email fails
@@ -97,7 +105,11 @@ def login(request: Request, body: LoginBody):
         return {"message": "Magic link sent. Check your email."}
 
     # Check approval
-    result = admin.table("access_requests").select("status").eq("email", email).execute()
+    try:
+        result = admin.table("access_requests").select("status").eq("email", email).execute()
+    except Exception as e:
+        logger.error("[login] DB select FAILED  error=%s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
     if not result.data:
         logger.warning("[login] 403 no access request found  email=%s", email)
         raise HTTPException(status_code=403, detail="No access request found. Please request access first.")
