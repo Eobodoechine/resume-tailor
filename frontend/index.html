@@ -84,6 +84,9 @@
   async function sendMagicLink() {
     const email = document.getElementById("login-email").value.trim();
     if (!email) return showAlert("alert-box", "Please enter your email.", "error");
+    const btn = document.querySelector('#panel-login .btn-primary');
+    btn.disabled = true;
+    btn.textContent = "Sending…";
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
@@ -91,10 +94,25 @@
         body: JSON.stringify({ email })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Error");
-      showAlert("alert-box", `✓ ${data.message}`, "success");
+      if (!res.ok) throw new Error(data.detail || "Something went wrong. Please try again.");
+      // Hide form, show confirmation — makes it unambiguous that the link was sent
+      document.getElementById("panel-login").style.display = "none";
+      const box = document.getElementById("alert-box");
+      box.innerHTML = "";
+      const msg = document.createElement("div");
+      msg.style.cssText = "background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:20px;text-align:center;";
+      msg.innerHTML = `<div style="font-size:1.5rem;margin-bottom:8px;">✅</div>
+        <strong>Check your email</strong>
+        <p style="margin:8px 0 16px;color:#6b7280;font-size:14px;">We sent a magic link to <strong>${email}</strong>.<br>Click the link in the email to sign in.</p>
+        <button onclick="document.getElementById('panel-login').style.display='block';this.parentNode.parentNode.innerHTML='';document.querySelector('#panel-login .btn-primary').disabled=false;document.querySelector('#panel-login .btn-primary').textContent='Send Magic Link';"
+          style="background:none;border:none;color:#6b7280;font-size:13px;cursor:pointer;text-decoration:underline;">
+          Wrong email? Try again
+        </button>`;
+      box.appendChild(msg);
     } catch (e) {
       showAlert("alert-box", e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "Send Magic Link";
     }
   }
 

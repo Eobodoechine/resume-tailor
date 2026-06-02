@@ -118,9 +118,15 @@ def serve_history():
 def serve_improve():
     return FileResponse(os.path.join(FRONTEND_DIR, "improve.html"))
 
-@app.get("/admin-panel")
+@app.get("/admin")
 def serve_admin():
     return FileResponse(os.path.join(FRONTEND_DIR, "admin.html"))
+
+@app.get("/admin-panel")
+def serve_admin_legacy():
+    """Legacy alias — redirects to /admin."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/admin", status_code=301)
 
 import logging as _logging
 _logging.getLogger(__name__).info(
