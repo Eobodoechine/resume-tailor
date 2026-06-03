@@ -87,64 +87,94 @@ class TestSynthesisCapping:
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_returns_claude_text(self, mock_client):
-        """
-        Result must combine both passes (compact + experience).
-        Two-pass synthesis: compact call → SUMMARY/SKILLS/EDUCATION,
-        experience call → EXPERIENCE.  Combined text is returned.
-        """
-        mock_client.messages.create.side_effect = [
-            _fake_message("COMPACT_SECTIONS"),
-            _fake_message("EXPERIENCE_SECTION"),
-        ]
+        """Return value is the text from the Claude response."""
+        mock_client.messages.create.return_value = _fake_message("MY MASTER RESUME")
         result = _real_claude_mod.synthesize_master_resume(["Some text"], PROFILE)
-        assert "COMPACT_SECTIONS" in result
-        assert "EXPERIENCE_SECTION" in result
+        assert result == "MY MASTER RESUME"
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_sends_single_user_message(self, mock_client):
-        """Each API call must use a single user turn, not a conversation."""
+        """synthesize_master_resume must use a single user turn when not truncated."""
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["Resume text"], PROFILE)
 
-        # Two calls total (compact pass + experience pass)
-        assert mock_client.messages.create.call_count == 2
-        for call in mock_client.messages.create.call_args_list:
-            kwargs = call[1]
-            assert len(kwargs["messages"]) == 1
-            assert kwargs["messages"][0]["role"] == "user"
+        # Normal (non-truncated) run = exactly one call
+        assert mock_client.messages.create.call_count == 1
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert len(call_kwargs["messages"]) == 1
+        assert call_kwargs["messages"][0]["role"] == "user"
 
     @patch.object(_real_claude_mod, "client")
     def test_timeout_passed_to_api(self, mock_client):
-        """Both API calls must carry the timeout."""
+        """API call must carry the timeout so slow responses don't hang forever."""
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
 
-        for call in mock_client.messages.create.call_args_list:
-            kwargs = call[1]
-            assert "timeout" in kwargs
-            assert kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert "timeout" in call_kwargs
+        assert call_kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_max_tokens_is_8000(self, mock_client):
         """
-        The EXPERIENCE pass must request at least 8000 output tokens so it
-        can write all roles without truncation.  The compact pass (SUMMARY +
-        SKILLS + EDUCATION) uses a smaller 2000-token budget — that is fine
-        because those sections are short.
-
-        This test pins the experience-pass value so a future accidental
-        regression is caught before it ships.
+        Synthesis must request 8000 output tokens so long EXPERIENCE sections
+        are not cut mid-bullet.  If truncated, a continuation call fires with
+        the same 8000-token budget.
         """
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["Resume content"], PROFILE)
 
-        # Second call is the experience pass — must have the large budget
-        assert mock_client.messages.create.call_count == 2
-        exp_kwargs = mock_client.messages.create.call_args_list[1][1]
-        assert exp_kwargs.get("max_tokens", 0) >= 8000, (
-            f"experience pass max_tokens={exp_kwargs.get('max_tokens')} — "
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs.get("max_tokens", 0) >= 8000, (
+            f"max_tokens={call_kwargs.get('max_tokens')} — "
             "must be >= 8000 to avoid truncating long EXPERIENCE sections"
         )
+
+    @patch.object(_real_claude_mod, "client")
+    def test_continuation_fires_when_truncated(self, mock_client):
+        """
+        When the first call hits max_tokens (output_tokens >= 7900), a
+        continuation call fires.  The continuation sends prior output as an
+        assistant turn so Claude resumes from the exact stopping point.
+        """
+        truncated = _fake_message("PARTIAL RESUME\nSome complete line.")
+        truncated.usage.output_tokens = 8000   # at the limit → triggers continuation
+        cont = _fake_message("REST OF RESUME")
+        cont.usage.output_tokens = 100          # clean stop
+        mock_client.messages.create.side_effect = [truncated, cont]
+
+        result = _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
+
+        assert mock_client.messages.create.call_count == 2
+        assert "PARTIAL RESUME" in result
+        assert "REST OF RESUME" in result
+
+        # Continuation must send the prior output as an assistant turn
+        cont_msgs = mock_client.messages.create.call_args_list[1][1]["messages"]
+        roles = [m["role"] for m in cont_msgs]
+        assert roles == ["user", "assistant", "user"]
+
+    @patch.object(_real_claude_mod, "client")
+    def test_no_continuation_when_not_truncated(self, mock_client):
+        """When output_tokens is well below the limit, no second call fires."""
+        msg = _fake_message("COMPLETE RESUME")
+        msg.usage.output_tokens = 3000   # far from limit
+        mock_client.messages.create.return_value = msg
+
+        _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
+        assert mock_client.messages.create.call_count == 1
+
+    @patch.object(_real_claude_mod, "client")
+    def test_max_four_continuations(self, mock_client):
+        """Loop stops after 4 continuations even if every pass is truncated."""
+        always_truncated = _fake_message("CHUNK")
+        always_truncated.usage.output_tokens = 8000
+        mock_client.messages.create.return_value = always_truncated
+
+        _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
+
+        # 1 original + 4 continuations = 5 total
+        assert mock_client.messages.create.call_count == 5
 
 
 # ── DeprecationWarning on sync stream_tailor_resume ──────────────────────────

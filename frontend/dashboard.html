@@ -102,13 +102,19 @@
     // Supabase redirects here on magic-link failure (e.g. expired link) with
     // error params in the URL hash: #error=access_denied&error_code=otp_expired
     // The user sees a blank login page otherwise — show a clear message (T1.7).
-    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const code   = params.get("error_code") || "";
-    let   msg    = "Your sign-in link is invalid. Please request a new one.";
-    if (code === "otp_expired") {
-      msg = "Your sign-in link has expired. Please request a new one.";
+    try {
+      const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const code   = params.get("error_code") || "";
+      let   msg    = "Your sign-in link is invalid. Please request a new one.";
+      if (code === "otp_expired") {
+        msg = "Your sign-in link has expired. Please request a new one.";
+      }
+      console.log("[dashboard] magic-link error detected  error_code=" + code + "  redirecting to login");
+      window.location.href = "/?error=" + encodeURIComponent(msg);
+    } catch (e) {
+      console.error("[dashboard] failed to parse error hash  hash=" + window.location.hash + "  error=" + e);
+      window.location.href = "/?error=" + encodeURIComponent("Sign-in failed. Please request a new link.");
     }
-    window.location.href = "/?error=" + encodeURIComponent(msg);
   } else {
     requireAuth();
     (async () => { await loadDashboard(); })();

@@ -94,6 +94,7 @@ class SecurityHeadersMiddleware:
 
         async def _send(message):
             if message["type"] == "http.response.start":
+              try:
                 headers = list(message.get("headers", []))
                 _log_headers("AFTER  call_next (before SecurityHeaders adds)", path, headers)
                 # Preview responses are loaded inside an iframe on the same origin.
@@ -104,6 +105,10 @@ class SecurityHeadersMiddleware:
                 # Without data: in font-src the browser blocks them and the resume
                 # body fails to render (header loads but body is blank — T8.2).
                 font_src = "'self' data: https://fonts.gstatic.com" if is_preview else "https://fonts.gstatic.com"
+                logger.debug(
+                    "[SecurityHeaders] path=%s  is_preview=%s  font_src=%r  frame_ancestors=%r",
+                    path, is_preview, font_src, frame_ancestors,
+                )
                 headers.extend([
                     (
                         b"content-security-policy",
@@ -129,6 +134,13 @@ class SecurityHeadersMiddleware:
                 ])
                 _log_headers("AFTER  SecurityHeaders adds", path, headers)
                 message = {**message, "headers": headers}
+              except Exception as e:
+                logger.error(
+                    "[SecurityHeaders] FAILED to build headers  path=%s  error=%s\n%s",
+                    path, e, __import__("traceback").format_exc(),
+                )
+                # fall through — send the original message without security headers
+                # rather than crashing the response entirely
             await send(message)
 
         await self.app(scope, receive, _send)

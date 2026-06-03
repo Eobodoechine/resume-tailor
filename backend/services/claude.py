@@ -81,133 +81,166 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     name = profile.get("full_name", "")
     contact_block = _build_contact_block(profile)
 
-    content_rules = f"""CONTENT RULES:
-- The resume files may use any section names (Work History, Employment, Skills & Tools, etc.)
-  Read them semantically — extract meaning, not just matching headers.
+    prompt = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
+Your job is to synthesize them into a single, comprehensive MASTER RESUME in structured plain text.
+
+CONTENT RULES:
 - Include ALL experience, skills, education, certifications, and achievements found across all files
 - Remove duplicates but keep the most detailed version of each entry
 - Do NOT invent or embellish anything — only use what is explicitly stated
 - Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
 - PRESERVE EXACT TOOL AND SYSTEM NAMES as they appear in the source files — do not normalize,
   abbreviate, or paraphrase. ATS systems match on exact strings.
-  When a tool name appears multiple times across files, keep the most complete version."""
+  When a tool name appears multiple times across files, keep the most complete version.
 
-    # ── Pass 1: compact sections (SUMMARY + SKILLS + EDUCATION) ──────────────
-    # These are short — they don't need a large token budget.  Writing them
-    # first in a dedicated call guarantees they are never crowded out by
-    # EXPERIENCE's length.
-    prompt_compact = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
+STRICT OUTPUT FORMAT:
 
-{content_rules}
-
-Your task for this call: extract ONLY the SUMMARY, SKILLS, and EDUCATION content.
-Do NOT write any job/role entries — those will be handled separately.
-
-OUTPUT FORMAT (write only these sections, in this order):
-
+1. Header (first lines, before any section):
 {contact_block}
 
-SUMMARY
-[3–4 sentence professional summary drawn from the source material]
+2. Section headers: EXACTLY these words in ALL CAPS on their own line:
+   SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (only if present)
 
-SKILLS
-[Each skill category on ONE line: Category Name: item1, item2, item3
- Do NOT write multi-line paragraphs.]
+3. EXPERIENCE section:
+   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
+   - NO sub-section headers inside a role — only bullet points
+   - Every bullet starts with "•"
 
-EDUCATION
-[Only actual degrees: Degree | School | Year
- Omit this section entirely if no formal degree exists in the source material.]
+4. SKILLS section:
+   - Each category on ONE line: Category Name: item1, item2, item3
+   - Do NOT write multi-line paragraphs for skills
 
-Resume files:
+5. EDUCATION:
+   - Only actual degrees from the resume: Degree | School | Year
+   - If no formal degree exists in the source material, omit EDUCATION entirely
+
+Contact info to include at the top:
+{contact_block}
+
+Resume files to synthesize:
 {combined}
 
-Output the header, SUMMARY, SKILLS, and EDUCATION now:"""
+Output the complete master resume now:"""
 
     t0 = time.monotonic()
-    msg_compact = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt_compact}],
-        timeout=API_TIMEOUT,
-    )
-    compact_text = msg_compact.content[0].text
+    try:
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=8000,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=API_TIMEOUT,
+        )
+    except Exception as e:
+        logger.error(
+            "synthesize: pass 1 API call FAILED  model=%s  error=%s\n%s",
+            CLAUDE_MODEL, e, traceback.format_exc(),
+        )
+        raise
+
+    try:
+        text = message.content[0].text
+    except (IndexError, AttributeError) as e:
+        logger.error(
+            "synthesize: pass 1 response has no text content  "
+            "content_len=%d  error=%s",
+            len(message.content) if message.content else 0, e,
+        )
+        raise
+
     logger.info(
-        "claude[synthesize:compact] input=%d output=%d ms=%d chars=%d",
-        msg_compact.usage.input_tokens,
-        msg_compact.usage.output_tokens,
+        "claude[synthesize] input=%d output=%d ms=%d chars=%d",
+        message.usage.input_tokens,
+        message.usage.output_tokens,
         int((time.monotonic() - t0) * 1000),
-        len(compact_text),
+        len(text),
     )
-    if msg_compact.usage.output_tokens >= 1900:
+
+    # ── Continuation loop — fires only when truncated, up to 4 extra passes ──
+    # If output_tokens hits the limit the response was cut mid-resume.
+    # Each pass sends the accumulated text as an assistant turn so Claude
+    # resumes from the exact character it stopped at.
+    # Before appending, trim any incomplete last line at the seam so Claude
+    # doesn't start mid-word and create a duplicate partial line.
+    MAX_CONTINUATIONS = 4
+    continuation = None
+    for pass_num in range(1, MAX_CONTINUATIONS + 1):
+        last_msg = continuation if continuation is not None else message
+        if last_msg.usage.output_tokens < 7900:
+            break   # clean stop — resume is complete
+
         logger.warning(
-            "synthesize: compact pass hit token limit — SUMMARY/SKILLS/EDUCATION may be truncated"
-            "  output_tokens=%d", msg_compact.usage.output_tokens,
+            "synthesize: pass %d hit max_tokens — firing continuation %d/%d  "
+            "output_tokens=%d  accumulated_chars=%d  tail=%r",
+            pass_num, pass_num, MAX_CONTINUATIONS,
+            last_msg.usage.output_tokens, len(text), text[-100:],
         )
 
-    # ── Pass 2: EXPERIENCE + CERTIFICATIONS + PROJECTS ────────────────────────
-    # This pass gets the full 8000-token budget for the longest section.
-    # We tell it what compact_text already captured so it doesn't double-count.
-    prompt_experience = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
+        # Trim the last line if it looks incomplete (cut mid-word/mid-sentence).
+        # A complete line ends with punctuation or is a section/role header.
+        lines = text.rstrip().splitlines()
+        if lines:
+            last_line = lines[-1].rstrip()
+            looks_complete = (
+                last_line.endswith((".", ",", ")", "|", "–", "-"))
+                or last_line.isupper()                      # section header e.g. EXPERIENCE
+                or last_line.count("|") >= 2                # role header
+                or last_line.startswith("•")                # bullet (may be truncated mid-word)
+            )
+            if not looks_complete:
+                text = "\n".join(lines[:-1])
+                logger.info(
+                    "synthesize: cont%d trimmed incomplete seam line: %r",
+                    pass_num, last_line,
+                )
 
-{content_rules}
+        t_cont = time.monotonic()
+        try:
+            continuation = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=8000,
+                messages=[
+                    {"role": "user",      "content": prompt},
+                    {"role": "assistant", "content": text},
+                    {"role": "user",      "content": "Continue exactly where you stopped. Do not repeat anything already written."},
+                ],
+                timeout=API_TIMEOUT,
+            )
+        except Exception as e:
+            logger.error(
+                "synthesize: continuation %d API call FAILED  model=%s  "
+                "accumulated_chars=%d  error=%s\n%s",
+                pass_num, CLAUDE_MODEL, len(text), e, traceback.format_exc(),
+            )
+            break   # return what we have rather than crashing
 
-A previous step already extracted this person's SUMMARY, SKILLS, and EDUCATION:
+        try:
+            cont_text = continuation.content[0].text
+        except (IndexError, AttributeError) as e:
+            logger.error(
+                "synthesize: continuation %d response has no text content  "
+                "content_len=%d  error=%s",
+                pass_num,
+                len(continuation.content) if continuation.content else 0, e,
+            )
+            break
 
---- ALREADY CAPTURED ---
-{compact_text}
---- END ALREADY CAPTURED ---
-
-Your task for this call: extract ONLY the work/role EXPERIENCE content (and CERTIFICATIONS
-or PROJECTS if present). Do NOT repeat the summary, skills, or education.
-
-The source files may call this section anything — "Work History", "Employment",
-"Professional Experience", "Consulting Experience", "Freelance", etc.
-Extract all of it, regardless of how it is labelled.
-
-OUTPUT FORMAT:
-
-EXPERIENCE
-[Each role on its own header line: Job Title | Company Name | Month Year – Month Year
- Then bullet points starting with "•" — the most impactful ones only, 4–6 per role.]
-
-CERTIFICATIONS
-[Only if present — omit section entirely if not]
-
-PROJECTS
-[Only if present — omit section entirely if not]
-
-Resume files:
-{combined}
-
-Output the EXPERIENCE section (and CERTIFICATIONS / PROJECTS if present) now:"""
-
-    t1 = time.monotonic()
-    msg_exp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=8000,
-        messages=[{"role": "user", "content": prompt_experience}],
-        timeout=API_TIMEOUT,
-    )
-    experience_text = msg_exp.content[0].text
-    logger.info(
-        "claude[synthesize:experience] input=%d output=%d ms=%d chars=%d",
-        msg_exp.usage.input_tokens,
-        msg_exp.usage.output_tokens,
-        int((time.monotonic() - t1) * 1000),
-        len(experience_text),
-    )
-    if msg_exp.usage.output_tokens >= 7900:
-        logger.warning(
-            "synthesize: experience pass hit token limit — EXPERIENCE may be truncated  "
-            "output_tokens=%d  tail=%r",
-            msg_exp.usage.output_tokens, experience_text[-200:],
+        logger.info(
+            "claude[synthesize:cont%d] input=%d output=%d ms=%d chars=%d",
+            pass_num,
+            continuation.usage.input_tokens,
+            continuation.usage.output_tokens,
+            int((time.monotonic() - t_cont) * 1000),
+            len(cont_text),
         )
+        text = text + "\n" + cont_text.lstrip()
 
-    # ── Assemble in traditional resume order ──────────────────────────────────
-    # compact_text  = Header + SUMMARY + SKILLS + EDUCATION
-    # experience_text = EXPERIENCE + optional CERTIFICATIONS/PROJECTS
-    # Traditional order: Header → SUMMARY → EXPERIENCE → SKILLS → EDUCATION → rest
-    text = compact_text.rstrip() + "\n\n" + experience_text.strip()
+    else:
+        # Loop exhausted all continuations and was still truncated
+        logger.error(
+            "synthesize: hit max continuations (%d) — resume may be incomplete  "
+            "final_chars=%d",
+            MAX_CONTINUATIONS, len(text),
+        )
 
     # Structural summary — tells you exactly what made it into the master
     sections = [h for h in ("SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION", "CERTIFICATIONS", "PROJECTS")
@@ -225,7 +258,7 @@ Output the EXPERIENCE section (and CERTIFICATIONS / PROJECTS if present) now:"""
         logger.warning(
             "synthesize: EXPERIENCE section present but 0 pipe-delimited role headers detected"
         )
-    if msg_exp.usage.output_tokens < 7900 and len(role_lines) == 1:
+    if len(role_lines) == 1:
         logger.warning(
             "synthesize: suspicious role count — roles=1  "
             "check source files for duplicates or incomplete content"

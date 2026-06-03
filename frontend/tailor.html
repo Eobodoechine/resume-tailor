@@ -1112,11 +1112,14 @@
     // UX: if the content doesn't look like a job listing, show warning state on
     // the card instead of green "✓ Job fetched successfully". The flow still
     // works — user can generate anyway or paste manually.
-    const header   = document.getElementById("jd-confirm-header");
-    const check    = document.getElementById("jd-confirm-check");
-    const title    = document.getElementById("jd-confirm-title");
+    const header     = document.getElementById("jd-confirm-header");
+    const check      = document.getElementById("jd-confirm-check");
+    const title      = document.getElementById("jd-confirm-title");
     const fetchAlert = document.getElementById("fetch-alert");
-    if (warning) {
+    if (!header || !check || !title || !fetchAlert) {
+      console.error("[showConfirmCard] missing DOM element — header=" + !!header +
+        " check=" + !!check + " title=" + !!title + " fetchAlert=" + !!fetchAlert);
+    } else if (warning) {
       header.style.background = "#fffbeb";
       header.style.borderColor = "#f59e0b";
       check.textContent  = "⚠";
@@ -1132,10 +1135,19 @@
       fetchAlert.innerHTML = "";
     }
 
-    document.getElementById("jd-confirm-card").style.display = "block";
+    const card = document.getElementById("jd-confirm-card");
+    if (!card) {
+      console.error("[showConfirmCard] #jd-confirm-card not found — card will not display");
+    } else {
+      card.style.display = "block";
+    }
 
-    // Hide the standalone Generate button while card is visible
-    document.getElementById("btn-tailor").style.display = "none";
+    const btnTailor = document.getElementById("btn-tailor");
+    if (!btnTailor) {
+      console.error("[showConfirmCard] #btn-tailor not found — generate button state unchanged");
+    } else {
+      btnTailor.style.display = "none";
+    }
   }
 
   function hideConfirmCard() {
@@ -1165,18 +1177,23 @@
     hideConfirmCard();
 
     try {
+      console.log("[fetchJD] START  url=" + url);
       const res = await apiFetch("/api/tailor/fetch-jd", {
         method: "POST",
         body: JSON.stringify({ url })
       });
+      console.log("[fetchJD] OK  text_chars=" + (res.text || "").length +
+        "  warning=" + (res.warning || "none"));
       // Store fetched text in the hidden textarea so getJDText() picks it up
       document.getElementById("jd-fetched").value = res.text;
       jdMode = "fetched";
       showConfirmCard(res.text, res.warning || null);
       // Clear any stale fetch-level alert
-      document.getElementById("fetch-alert").innerHTML = "";
+      const fa = document.getElementById("fetch-alert");
+      if (fa) fa.innerHTML = "";
     } catch (e) {
       if (e && e.redirecting) return;
+      console.error("[fetchJD] FAILED  url=" + url + "  error=" + e.message);
       showAlert("alert-box", e.message, "error");
     } finally {
       btn.disabled = false;
