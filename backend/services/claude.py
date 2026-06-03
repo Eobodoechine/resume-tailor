@@ -3,6 +3,7 @@ Claude API calls for master resume synthesis and tailoring.
 """
 import logging
 import time
+import traceback
 import warnings
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
