@@ -184,7 +184,8 @@ Output the complete master resume now:"""
                 last_line.endswith((".", ",", ")", "|", "–", "-"))
                 or last_line.isupper()                      # section header e.g. EXPERIENCE
                 or last_line.count("|") >= 2                # role header
-                or last_line.startswith("•")                # bullet (may be truncated mid-word)
+                # NOTE: do NOT add startswith("•") here — a bullet cut mid-word
+                # is NOT complete; trimming it lets Claude rewrite it cleanly.
             )
             if not looks_complete:
                 text = "\n".join(lines[:-1])
