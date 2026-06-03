@@ -127,44 +127,52 @@ async function apiUpload(path, formData) {
 // Same-origin anchor clicks don't require a user-activation window.
 //
 async function apiDownload(path, suggestedFilename) {
-  console.group(`[download v8] START`);
-  console.log(`  path argument    : ${path}`);
+  console.group(`[download v9] START`);
+  console.log(`  path             : ${path}`);
   console.log(`  suggestedFilename: ${JSON.stringify(suggestedFilename)}`);
 
-  // ── Build URL with filename as last path segment ──────────────────────────
-  // Chrome derives the save-as name from the last URL segment when it carries
-  // a file extension.  This bypasses Content-Disposition entirely (which
-  // BaseHTTPMiddleware strips on binary responses).
-  if (!suggestedFilename) {
-    console.warn(`[download v8] ⚠ suggestedFilename is empty/falsy — Chrome will` +
-      ` fall back to URL-path naming and may produce a UUID filename!`);
-  }
   const fullPath = suggestedFilename
     ? `${path}/${encodeURIComponent(suggestedFilename)}`
     : path;
   console.log(`  fullPath (URL)   : ${fullPath}`);
 
-  // ── 1. HEAD: auth + record-existence check (no LibreOffice) ──────────────
-  console.log(`[download v8] 1. HEAD ${fullPath}`);
+  // ── 1. Fire anchor click IMMEDIATELY (synchronous — user activation intact) ──
+  // Root cause of UUID filenames: after `await fetch()`, Chrome loses the user
+  // activation token. Without it, Chrome internally creates a blob URL for the
+  // PDF response and saves the file with a blob UUID instead of the filename
+  // from Content-Disposition or a.download. Firing first keeps the token alive.
+  const a = document.createElement("a");
+  a.href = API + fullPath;
+  if (suggestedFilename) {
+    a.download = suggestedFilename;
+  }
+  a.style.display = "none";
+  document.body.appendChild(a);
+  console.log(`[download v9] 1. firing anchor click (sync, user activation preserved)`);
+  console.log(`[download v9]    href     = ${a.href}`);
+  console.log(`[download v9]    download = "${a.download}"`);
+  a.click();
+  setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 100);
+
+  // ── 2. Validate auth via HEAD (async, after click) ────────────────────────
+  // The GET is already in flight. HEAD runs concurrently to catch auth errors
+  // and surface a clear UI message if the session expired. If the GET itself
+  // gets a 401, Chrome shows a download error — this gives a better message.
+  console.log(`[download v9] 2. HEAD ${path} (auth check, async)`);
   let res;
   try {
     res = await fetch(API + fullPath, { credentials: "include", method: "HEAD" });
   } catch (networkErr) {
-    console.error(`[download v8] ✗ HEAD network error — check connectivity:`, networkErr);
+    console.error(`[download v9] ✗ HEAD network error:`, networkErr);
     console.groupEnd();
     throw new Error("Download failed — network error. Check your connection.");
   }
 
-  // Log every response header we care about so middleware stripping is visible.
-  console.log(`[download v8]   HEAD status          : ${res.status} ${res.statusText}`);
-  console.log(`[download v8]   Content-Type         : ${res.headers.get("Content-Type")}`);
-  console.log(`[download v8]   Content-Disposition  : ${res.headers.get("Content-Disposition")}`);
-  if (!res.headers.get("Content-Disposition")) {
-    console.warn(`[download v8]   ⚠ Content-Disposition is null — filename will be derived from URL path`);
-  }
+  console.log(`[download v9]   HEAD status         : ${res.status} ${res.statusText}`);
+  console.log(`[download v9]   Content-Disposition : ${res.headers.get("Content-Disposition")}`);
 
   if (res.status === 401) {
-    console.warn(`[download v8] ✗ 401 — session expired, redirecting to login`);
+    console.warn(`[download v9] ✗ 401 — session expired`);
     console.groupEnd();
     clearToken();
     fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
@@ -172,41 +180,16 @@ async function apiDownload(path, suggestedFilename) {
     throw new RedirectingError();
   }
   if (res.status === 404) {
-    console.error(`[download v8] ✗ 404 — record not found. Check that the` +
-      ` /{record_id}/pdf/{filename} route is deployed on the backend.`);
+    console.error(`[download v9] ✗ 404 — record not found`);
     console.groupEnd();
     throw new Error(`Download failed (404) — record not found.`);
   }
   if (!res.ok) {
-    console.error(`[download v8] ✗ HEAD failed: ${res.status} ${res.statusText}`);
+    console.error(`[download v9] ✗ HEAD failed: ${res.status} ${res.statusText}`);
     console.groupEnd();
     throw new Error(`Download failed (${res.status}) — please try again.`);
   }
-  console.log(`[download v8]   HEAD OK ✓`);
-
-  // ── 2. Fire download via anchor click ────────────────────────────────────
-  // Primary mechanism: Chrome reads the filename from the last URL path segment.
-  // Belt-and-suspenders: a.download is also set to the same string.
-  const a = document.createElement("a");
-  a.href = API + fullPath;
-  if (suggestedFilename) {
-    a.download = suggestedFilename;
-    console.log(`[download v8] 2. anchor.href    = ${a.href}`);
-    console.log(`[download v8]    anchor.download = "${a.download}"`);
-    console.log(`[download v8]    Chrome will save as: "${suggestedFilename}" (from URL path + download attr)`);
-  } else {
-    console.warn(`[download v8] 2. anchor.download NOT set — Chrome will derive` +
-      ` filename from URL path. If no .pdf extension is in the path, expect UUID filename.`);
-  }
-  a.style.display = "none";
-  document.body.appendChild(a);
-  console.log(`[download v8]    a.click() firing — GET will generate PDF via Playwright (RESUME_PDF_ENGINE=playwright)`);
-  a.click();
-  setTimeout(() => {
-    if (a.parentNode) a.parentNode.removeChild(a);
-    console.log(`[download v8]    anchor cleaned up`);
-  }, 100);
-  console.log(`[download v8] DONE — browser download initiated`);
+  console.log(`[download v9]   HEAD OK ✓ — PDF generating, check Downloads folder`);
   console.groupEnd();
 }
 
