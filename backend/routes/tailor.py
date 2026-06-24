@@ -36,7 +36,16 @@ router = APIRouter(prefix="/api/tailor", tags=["tailor"])
 ai_client = claude_service.client  # shared Anthropic client — no duplicate connection pool
 
 MAX_JD_LENGTH = 12_000   # ~3,000 tokens
+MAX_FETCH_BYTES = 5_000_000   # cap fetched body (~5 MB) — guard against memory-exhaustion
 MAX_HISTORY_TURNS = 20
+
+# High-recall-but-not-too-generic job indicators. Used for a non-blocking
+# "this might not be a job listing" warning (word-boundary matched).
+_JOB_KEYWORDS = {
+    "responsibilities", "requirements", "qualifications", "experience",
+    "skills", "apply", "position", "role", "candidate", "salary",
+    "opportunity", "employer", "benefits", "location", "remote",
+}
 _API_TIMEOUT = claude_service.API_TIMEOUT
 
 # Limit concurrent LibreOffice processes to 1.
@@ -105,43 +114,56 @@ def _extract_jsonld_job(html: str) -> str:
         r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
         re.IGNORECASE | re.DOTALL
     )
+
+    def _find_jobposting(node):
+        """First JobPosting in a JSON-LD node — handles a bare object, a list,
+        or a {"@graph": [...]} wrapper (common on WordPress/Yoast/Drupal pages)."""
+        if isinstance(node, dict):
+            if node.get("@type") in ("JobPosting", "jobPosting"):
+                return node
+            if isinstance(node.get("@graph"), list):
+                return _find_jobposting(node["@graph"])
+            return None
+        if isinstance(node, list):
+            for item in node:
+                found = _find_jobposting(item)
+                if found is not None:
+                    return found
+        return None
+
+    def _flatten(value) -> str:
+        """Render a JSON-LD value to plain text — joins lists/dicts instead of
+        leaking a Python repr like "['a', 'b']" into the JD."""
+        if isinstance(value, list):
+            return " ".join(_flatten(v) for v in value)
+        if isinstance(value, dict):
+            return " ".join(_flatten(v) for v in value.values())
+        return str(value)
+
     for match in pattern.finditer(html):
         try:
             data = json.loads(match.group(1).strip())
-            # May be a single object or a @graph / list — search for a JobPosting
-            if isinstance(data, list):
-                # Many ATS platforms wrap multiple types in an array; find the job
-                data = next(
-                    (d for d in data
-                     if isinstance(d, dict) and d.get("@type") in ("JobPosting", "jobPosting")),
-                    None
-                )
-                if data is None:
-                    continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("@type") not in ("JobPosting", "jobPosting"):
-                continue
-
-            parts: list[str] = []
-            if data.get("title"):
-                parts.append(f"Job Title: {data['title']}")
-            if isinstance(data.get("hiringOrganization"), dict):
-                org_name = data["hiringOrganization"].get("name")
-                if org_name:
-                    parts.append(f"Company: {org_name}")
-            if data.get("description"):
-                # Description may itself contain HTML — strip it
-                desc_clean = _strip_html(data["description"])
-                parts.append(desc_clean)
-            if data.get("qualifications"):
-                parts.append(f"Qualifications: {_strip_html(str(data['qualifications']))}")
-            if data.get("responsibilities"):
-                parts.append(f"Responsibilities: {_strip_html(str(data['responsibilities']))}")
-            if parts:
-                return "\n\n".join(parts)
-        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
+        except (json.JSONDecodeError, AttributeError, TypeError):
             continue
+        job = _find_jobposting(data)
+        if job is None:
+            continue
+        parts: list[str] = []
+        if job.get("title"):
+            parts.append(f"Job Title: {job['title']}")
+        if isinstance(job.get("hiringOrganization"), dict):
+            org_name = job["hiringOrganization"].get("name")
+            if org_name:
+                parts.append(f"Company: {org_name}")
+        if job.get("description"):
+            # Description may itself contain HTML — strip it
+            parts.append(_strip_html(_flatten(job["description"])))
+        if job.get("qualifications"):
+            parts.append(f"Qualifications: {_strip_html(_flatten(job['qualifications']))}")
+        if job.get("responsibilities"):
+            parts.append(f"Responsibilities: {_strip_html(_flatten(job['responsibilities']))}")
+        if parts:
+            return "\n\n".join(parts)
     return ""
 
 
@@ -278,9 +300,15 @@ def _validate_fetch_url(url: str):
     try:
         infos = socket.getaddrinfo(hostname, None)
     except Exception:
-        # DNS failure — let httpx surface a clean fetch error downstream.
-        logger.info("[fetch-jd] DNS resolution failed  host=%r — deferring to httpx", hostname)
-        return
+        # Fail CLOSED. Previously this returned (treated unresolved as allowed),
+        # but httpx then resolves independently with no SSRF guard — a name that
+        # Python fails to resolve but httpx connects to would bypass every IP
+        # check. Reject instead of deferring.
+        logger.warning("[fetch-jd] SSRF blocked — DNS resolution failed (fail-closed)  host=%r", hostname)
+        raise HTTPException(
+            status_code=400,
+            detail="Couldn't resolve that URL's host. Check the link, or paste the job description text instead.",
+        )
     resolved = sorted({info[4][0] for info in infos})
     logger.info("[fetch-jd] SSRF check  host=%r  resolved=%s", hostname, resolved)
     for ip_str in resolved:
@@ -300,59 +328,286 @@ _BROWSER_UA = (
 )
 
 
+def _decode_html(content: bytes, header_charset) -> str:
+    """Decode response bytes to text. httpx's resp.text defaults to utf-8 when
+    the HTTP Content-Type carries no charset and does NOT consult the page's
+    <meta charset> tag — so meta-only non-UTF-8 pages (older/regional career
+    sites) come back as mojibake. Prefer the header charset, then sniff
+    <meta charset>, then fall back utf-8 → cp1252."""
+    if header_charset:
+        try:
+            return content.decode(header_charset, errors="replace")
+        except (LookupError, TypeError):
+            pass
+    m = re.search(rb'<meta[^>]+charset=["\']?\s*([a-zA-Z0-9_\-]+)', content[:4096], re.IGNORECASE)
+    if m:
+        try:
+            return content.decode(m.group(1).decode("ascii", "ignore"), errors="replace")
+        except LookupError:
+            pass
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return content.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
+_META_TAG_RE = re.compile(
+    r'<meta\b[^>]*\b(?:property|name)=["\']'
+    r'(og:title|og:description|twitter:title|twitter:description|description)["\'][^>]*>',
+    re.IGNORECASE,
+)
+_META_CONTENT_RE = re.compile(r'\bcontent=["\'](.*?)["\']', re.IGNORECASE | re.DOTALL)
+
+
+def _extract_og_meta(html: str) -> str:
+    """Last-resort fallback for JS-rendered (SPA) pages: harvest the job
+    title/description from Open Graph / Twitter / <meta name=description> tags.
+    This content lives in the static shell HTML even when the body is an empty
+    React root, and it is attribute-borne so the tag-stripping parser never
+    sees it."""
+    import html as _htmlmod
+    title, desc = "", ""
+    for tag in _META_TAG_RE.finditer(html):
+        kind = tag.group(1).lower()
+        cm = _META_CONTENT_RE.search(tag.group(0))
+        if not cm:
+            continue
+        value = _htmlmod.unescape(cm.group(1)).strip()
+        if not value:
+            continue
+        if "title" in kind:
+            if not title:
+                title = value
+        elif len(value) > len(desc):
+            desc = value
+    return "\n\n".join(p for p in (title, desc) if p)
+
+
+def _extract_ats_json(raw: bytes) -> str:
+    """Extract JD text from an ATS JSON endpoint (Lever/Greenhouse/etc.). Users
+    often paste the JSON API URL behind a posting; _strip_html would leave the
+    braces/quotes intact and the result would pass the gate as garbage, so
+    parse known fields instead."""
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        return ""
+    parts: list[str] = []
+    for k in ("text", "title", "name", "description", "descriptionPlain",
+              "content", "additionalPlain", "additional"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(_strip_html(v))
+    lists = data.get("lists")
+    if isinstance(lists, list):
+        for item in lists:
+            if isinstance(item, dict):
+                seg = " ".join(_strip_html(str(item.get(x, ""))) for x in ("text", "content"))
+                if seg.strip():
+                    parts.append(seg)
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+def _truncate_jd(text: str) -> tuple[str, bool]:
+    """Truncate to MAX_JD_LENGTH on a word boundary. Returns (text, truncated)."""
+    if len(text) <= MAX_JD_LENGTH:
+        return text, False
+    cut = text[:MAX_JD_LENGTH]
+    sp = cut.rfind(" ")
+    if sp > MAX_JD_LENGTH * 0.8:
+        cut = cut[:sp]
+    return cut.rstrip(), True
+
+
+# ── Host-specific SPA extractors ────────────────────────────────────────────────
+
+# Hardcoded: NEVER interpolate any part of the user's URL into the API host —
+# that would turn the second fetch into an SSRF primitive.
+_TALENTNET_API_HOST = "talentnet-api-v6.v6-prod-use1.talentnet.community"
+_TALENTNET_PAGE_RE = re.compile(
+    r'^https://(?P<tenant>[a-z0-9-]{1,63})\.talentnet\.community/jobs/'
+    r'(?P<jid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})',
+    re.IGNORECASE,
+)
+
+
+async def _extract_talentnet(url: str, client: httpx.AsyncClient) -> str:
+    """TalentNet/Workday community boards are React SPAs whose raw HTML is an
+    empty shell — the JD is only available via an XHR that requires BOTH an
+    x-tenant header (= the subdomain) and x-spa-type: community (each alone
+    returns 404). If `url` is a TalentNet job page, fetch the JSON API and
+    return the JD text; otherwise return "" so the caller falls through.
+
+    SSRF-safe: the API host is a hardcoded constant, the tenant is regex-
+    allowlisted, the job id is UUID-validated, and the constructed URL is run
+    through the same _validate_fetch_url guard as redirect targets."""
+    m = _TALENTNET_PAGE_RE.match(url)
+    if not m:
+        return ""
+    tenant = m.group("tenant").lower()
+    try:
+        job_id = str(uuid.UUID(m.group("jid")))
+    except ValueError:
+        return ""
+    api_url = f"https://{_TALENTNET_API_HOST}/api/community/job/{job_id}"
+    await asyncio.to_thread(_validate_fetch_url, api_url)
+    try:
+        async with client.stream(
+            "GET",
+            api_url,
+            headers={
+                "Accept": "application/json",
+                "x-tenant": tenant,            # both headers required (each alone → 404)
+                "x-spa-type": "community",
+                "User-Agent": _BROWSER_UA,
+            },
+        ) as resp:
+            if resp.status_code != 200:
+                logger.info("[fetch-jd] talentnet API non-200  tenant=%s  status=%d",
+                            tenant, resp.status_code)
+                return ""
+            # Bounded read — keep the trusted-host JSON read under the same cap
+            # as the generic fetch (defense-in-depth, not attacker-influenceable).
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > MAX_FETCH_BYTES:
+                    logger.warning("[fetch-jd] talentnet body exceeded %d-byte cap  tenant=%s",
+                                   MAX_FETCH_BYTES, tenant)
+                    return ""
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+    except httpx.HTTPError as e:
+        logger.info("[fetch-jd] talentnet API fetch failed  tenant=%s  error=%s", tenant, e)
+        return ""
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    if not isinstance(data, dict):
+        return ""
+    parts: list[str] = []
+    title = data.get("title")
+    if isinstance(title, dict):
+        title = title.get("name")
+    if isinstance(title, str) and title.strip():
+        parts.append(f"Job Title: {title.strip()}")
+    loc = data.get("location")
+    if isinstance(loc, dict):
+        loc = loc.get("name") or loc.get("city")
+    if isinstance(loc, str) and loc.strip():
+        parts.append(f"Location: {loc.strip()}")
+    if isinstance(data.get("description"), str):
+        parts.append(_strip_html(data["description"]))
+    skills = data.get("skills")
+    if isinstance(skills, list):
+        names = [(s.get("name") if isinstance(s, dict) else str(s)) for s in skills]
+        names = [n for n in names if n]
+        if names:
+            parts.append("Skills: " + ", ".join(names))
+    return "\n\n".join(p for p in parts if p.strip())
+
+
 @router.post("/fetch-jd")
 @limiter.limit("30/minute")
 async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = Depends(require_user)):
     """Fetch and extract plain text from a job posting URL.
 
     Strategy (in order):
-    1. Fetch raw HTML with a browser-like User-Agent via async httpx (non-blocking).
-    2. Try JSON-LD schema.org/JobPosting extraction — works for Greenhouse,
-       Lever, Workday, Jobvite even when the page is client-rendered.
-    3. Fall back to full HTML stripping (works for Indeed, company career pages).
-    4. Raise a clear, actionable error if content is still too short.
+    1. SSRF-validate the URL (and any redirect target).
+    2. Host-specific SPA API extractors (TalentNet/Workday community) — these
+       boards render the JD only via XHR, so the raw HTML shell is useless.
+    3. Branch on Content-Type: parse ATS JSON; reject PDFs with a clear message.
+    4. For HTML: JSON-LD (schema.org/JobPosting, incl. @graph) → full HTML strip
+       → Open Graph/meta fallback (recovers SPA shells).
+    5. Clear, actionable error if content is still too short.
+
+    Body reads are byte-capped (MAX_FETCH_BYTES) and CPU-bound parsing runs in a
+    thread so a huge page can neither exhaust memory nor stall the event loop.
     """
     logger.info("[fetch-jd] START  user=%s  url=%r", ctx.user.id, body.url)
-    # _validate_fetch_url calls socket.gethostbyname() which is a blocking DNS
-    # lookup. Run it in a thread pool so it doesn't stall the event loop.
+    # _validate_fetch_url does a blocking DNS lookup — run it off the event loop.
     await asyncio.to_thread(_validate_fetch_url, body.url)
     try:
         t0 = time.monotonic()
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
-            resp = await client.get(
-                body.url,
-                headers={
-                    "User-Agent": _BROWSER_UA,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-            resp.raise_for_status()
-            raw_html = resp.text
+            # Strategy: host-specific SPA extractor (short-circuits the shell fetch).
+            text = await _extract_talentnet(body.url, client)
 
-        # Re-validate the final URL after redirects — a redirect chain could
-        # land on an internal service even if the original URL was public.
-        # Note: this catches redirect-based SSRF but not DNS rebinding (the TCP
-        # connection is already established by this point). A full DNS-pinning
-        # fix would require a custom httpx transport.
-        final_url = str(resp.url)
-        if final_url != body.url:
-            logger.info("[fetch-jd] followed redirect  user=%s  original=%r  final=%r",
-                        ctx.user.id, body.url, final_url)
-            await asyncio.to_thread(_validate_fetch_url, final_url)
+            if not text:
+                async with client.stream(
+                    "GET",
+                    body.url,
+                    headers={
+                        "User-Agent": _BROWSER_UA,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("content-type", "").lower()
+                    # Bounded read — a huge/malicious body can't exhaust memory.
+                    chunks: list[bytes] = []
+                    total = 0
+                    capped = False
+                    async for chunk in resp.aiter_bytes():
+                        total += len(chunk)
+                        if total > MAX_FETCH_BYTES:
+                            capped = True
+                            break
+                        chunks.append(chunk)
+                    raw_bytes = b"".join(chunks)
+                    header_charset = resp.charset_encoding
+                    final_url = str(resp.url)
+                if capped:
+                    logger.warning("[fetch-jd] body exceeded %d-byte cap  user=%s  url=%r",
+                                   MAX_FETCH_BYTES, ctx.user.id, body.url)
 
-        fetch_ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[fetch-jd] fetched  user=%s  url=%r  status=%d  html_len=%d  ms=%d",
-                    ctx.user.id, body.url, resp.status_code, len(raw_html), fetch_ms)
+                # Re-validate the final URL after redirects — a redirect chain
+                # could land on an internal service. (Catches redirect-based
+                # SSRF, not same-name DNS rebinding — see _validate_fetch_url.)
+                if final_url != body.url:
+                    logger.info("[fetch-jd] followed redirect  user=%s  original=%r  final=%r",
+                                ctx.user.id, body.url, final_url)
+                    await asyncio.to_thread(_validate_fetch_url, final_url)
 
-        # Strategy 1: JSON-LD structured data (handles JS-rendered ATS platforms)
-        text = _extract_jsonld_job(raw_html)
-        if len(text) >= 100:
-            logger.info("[fetch-jd] extracted via JSON-LD  user=%s  chars=%d", ctx.user.id, len(text))
-        else:
-            # Strategy 2: Full HTML strip (server-rendered pages, company career sites)
-            text = _strip_html(raw_html)
-            logger.info("[fetch-jd] extracted via HTML strip  user=%s  chars=%d", ctx.user.id, len(text))
+                fetch_ms = int((time.monotonic() - t0) * 1000)
+                logger.info("[fetch-jd] fetched  user=%s  url=%r  bytes=%d  ctype=%r  ms=%d",
+                            ctx.user.id, body.url, len(raw_bytes), content_type, fetch_ms)
+
+                # Strategy: branch on Content-Type so non-HTML bodies don't get
+                # stripped into garbage that slips past the gate.
+                if "application/pdf" in content_type or raw_bytes[:5] == b"%PDF-":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=("That link is a PDF, not a web page. Download it and paste the "
+                                "job description text, or upload the PDF directly."),
+                    )
+                if "json" in content_type:
+                    text = await asyncio.to_thread(_extract_ats_json, raw_bytes)
+                else:
+                    raw_html = _decode_html(raw_bytes, header_charset)
+                    # Strategy 1: JSON-LD structured data.
+                    text = await asyncio.to_thread(_extract_jsonld_job, raw_html)
+                    if len(text) < 100:
+                        # Strategy 2: full HTML strip (server-rendered pages).
+                        text = await asyncio.to_thread(_strip_html, raw_html)
+                    if len(text) < 100:
+                        # Strategy 3: Open Graph/meta fallback (JS-rendered shells).
+                        og = await asyncio.to_thread(_extract_og_meta, raw_html)
+                        if len(og) > len(text):
+                            text = og
+
+        logger.info("[fetch-jd] extracted  user=%s  chars=%d", ctx.user.id, len(text))
 
         if len(text) < 100:
             logger.warning("[fetch-jd] 400 extracted text too short  user=%s  url=%r  chars=%d",
@@ -365,17 +620,12 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
                     "Try copying the job description text and pasting it directly."
                 )
             )
-        # Content validation: check for job-description indicators.
-        # Returns a warning (not an error) so the user can still proceed with
-        # whatever was fetched — they may know the content is correct even if
-        # our heuristic doesn't recognise it.
-        _JOB_KEYWORDS = {
-            "responsibilities", "requirements", "qualifications", "experience",
-            "skills", "apply", "position", "role", "candidate", "salary",
-            "opportunity", "employer", "benefits", "location", "remote",
-        }
+        # Content validation: word-boundary keyword check (substring matching
+        # let 'role' match 'payroll' etc., inflating the count). Non-blocking
+        # warning so the user can still proceed with whatever was fetched.
         text_lower = text.lower()
-        found_keywords = [kw for kw in _JOB_KEYWORDS if kw in text_lower]
+        found_keywords = [kw for kw in _JOB_KEYWORDS
+                          if re.search(rf"\b{re.escape(kw)}\b", text_lower)]
         warning = None
         if len(found_keywords) < 2:
             warning = (
@@ -388,11 +638,15 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
                 "user=%s  url=%r  chars=%d  keywords_found=%s",
                 ctx.user.id, body.url, len(text), found_keywords,
             )
-        logger.info("[fetch-jd] COMPLETE  user=%s  final_chars=%d  keywords=%d",
-                    ctx.user.id, min(len(text), MAX_JD_LENGTH), len(found_keywords))
-        result = {"text": text[:MAX_JD_LENGTH]}
+        jd_text, was_truncated = _truncate_jd(text)
+        logger.info("[fetch-jd] COMPLETE  user=%s  final_chars=%d  keywords=%d  truncated=%s",
+                    ctx.user.id, len(jd_text), len(found_keywords), was_truncated)
+        result = {"text": jd_text}
         if warning:
             result["warning"] = warning
+        elif was_truncated:
+            result["warning"] = ("The posting was long and was truncated to fit. "
+                                  "Review the text below before generating.")
         return result
     except HTTPException:
         raise

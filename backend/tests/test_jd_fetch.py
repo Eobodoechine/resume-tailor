@@ -181,3 +181,217 @@ class TestExtractJsonLdJob:
         result = self._extract(html)
         assert "<ul>" not in result
         assert "Lead product" in result
+
+    def test_handles_graph_wrapped_jobposting(self):
+        """WordPress/Yoast/Drupal pages wrap JobPosting in {"@graph": [...]}."""
+        html = """
+        <script type="application/ld+json">
+        {"@context": "https://schema.org",
+         "@graph": [
+            {"@type": "WebPage", "name": "Careers"},
+            {"@type": "JobPosting", "title": "Backend Engineer",
+             "description": "Build APIs and own services end to end."}
+         ]}
+        </script>
+        """
+        result = self._extract(html)
+        assert "Backend Engineer" in result
+        assert "Build APIs" in result
+
+    def test_array_fields_do_not_leak_python_repr(self):
+        """responsibilities/qualifications as JSON arrays must not become "['x']"."""
+        html = """
+        <script type="application/ld+json">
+        {"@type": "JobPosting", "title": "QA",
+         "description": "Test things.",
+         "responsibilities": ["Write tests", "File bugs"],
+         "qualifications": ["3y experience"]}
+        </script>
+        """
+        result = self._extract(html)
+        assert "[" not in result and "'" not in result
+        assert "Write tests" in result
+        assert "File bugs" in result
+
+
+# ── Open Graph / meta fallback ──────────────────────────────────────────────────
+
+class TestExtractOgMeta:
+
+    def _og(self, html: str) -> str:
+        from routes.tailor import _extract_og_meta
+        return _extract_og_meta(html)
+
+    def test_recovers_jd_from_spa_shell_og_tags(self):
+        """The reported bug: a React shell with empty body still carries the JD
+        in og:* meta. content may appear before OR after the property attr."""
+        html = (
+            "<html><head>"
+            "<meta property='og:title' content='Data Analyst - Atlanta, GA | Workday'>"
+            "<meta content='This is a Hybrid position. Job Summary: data-driven strategist...' "
+            "property='og:description'>"
+            "</head><body><div id='root'></div></body></html>"
+        )
+        result = self._og(html)
+        assert "Data Analyst" in result
+        assert "Hybrid position" in result
+
+    def test_unescapes_entities(self):
+        html = "<meta name='description' content='Build &amp; ship R&amp;D tools'>"
+        assert "Build & ship R&D tools" in self._og(html)
+
+    def test_empty_when_no_meta(self):
+        assert self._og("<html><body><div id='root'></div></body></html>") == ""
+
+
+# ── Encoding ────────────────────────────────────────────────────────────────────
+
+class TestDecodeHtml:
+
+    def _decode(self, content: bytes, charset):
+        from routes.tailor import _decode_html
+        return _decode_html(content, charset)
+
+    def test_meta_only_cp1252_no_mojibake(self):
+        """charset only in <meta>, none in HTTP header (header_charset=None)."""
+        raw = "<meta charset='windows-1252'><p>Café — naïve résumé</p>".encode("cp1252")
+        out = self._decode(raw, None)
+        assert "Café" in out and "résumé" in out
+        assert "�" not in out  # no replacement chars
+
+    def test_header_charset_wins(self):
+        raw = "<p>Café</p>".encode("cp1252")
+        assert "Café" in self._decode(raw, "cp1252")
+
+
+# ── ATS JSON endpoints ──────────────────────────────────────────────────────────
+
+class TestExtractAtsJson:
+
+    def _j(self, raw: bytes) -> str:
+        from routes.tailor import _extract_ats_json
+        return _extract_ats_json(raw)
+
+    def test_parses_lever_style_json(self):
+        raw = (b'[{"text":"Senior CSM","descriptionPlain":"Own the book of business.",'
+               b'"lists":[{"text":"What you bring","content":"<li>5y experience</li>"}]}]')
+        out = self._j(raw)
+        assert "Senior CSM" in out
+        assert "Own the book of business" in out
+        assert "5y experience" in out
+        assert "<li>" not in out
+
+    def test_parses_greenhouse_style_json(self):
+        raw = b'{"title":"Data Engineer","content":"<p>Build pipelines</p>"}'
+        out = self._j(raw)
+        assert "Data Engineer" in out and "Build pipelines" in out
+
+    def test_invalid_json_returns_empty(self):
+        assert self._j(b"not json") == ""
+
+
+# ── Truncation ──────────────────────────────────────────────────────────────────
+
+class TestTruncateJd:
+
+    def test_no_truncation_under_limit(self):
+        from routes.tailor import _truncate_jd
+        txt, cut = _truncate_jd("short jd")
+        assert cut is False and txt == "short jd"
+
+    def test_truncates_on_word_boundary(self):
+        from routes.tailor import _truncate_jd, MAX_JD_LENGTH
+        txt, cut = _truncate_jd("word " * (MAX_JD_LENGTH // 3))
+        assert cut is True
+        assert len(txt) <= MAX_JD_LENGTH
+        assert not txt.endswith("wor")  # not cut mid-word at the seam
+
+
+# ── DNS fail-closed (SSRF) ──────────────────────────────────────────────────────
+
+class TestDnsFailClosed:
+
+    def test_dns_failure_is_rejected_not_deferred(self):
+        """A name Python can't resolve must FAIL CLOSED, not be treated as allowed
+        (httpx would otherwise resolve it independently with no SSRF guard)."""
+        from routes.tailor import _validate_fetch_url
+        with patch("routes.tailor.socket.getaddrinfo", side_effect=OSError("SERVFAIL")):
+            with pytest.raises(HTTPException) as exc:
+                _validate_fetch_url("https://weird-name.example/jobs")
+            assert exc.value.status_code == 400
+
+
+# ── TalentNet SPA extractor ─────────────────────────────────────────────────────
+
+class _FakeStream:
+    """Async-context-manager stand-in for httpx's client.stream(...)."""
+    def __init__(self, raw: bytes, status: int = 200):
+        self._raw = raw
+        self.status_code = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_bytes(self):
+        yield self._raw
+
+
+class TestExtractTalentnet:
+
+    def _client_returning(self, payload, status=200):
+        """A MagicMock httpx client whose .stream() yields a fixed JSON payload."""
+        import json as _json
+        raw = _json.dumps(payload).encode("utf-8")
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_FakeStream(raw, status))
+        return client
+
+    async def test_non_talentnet_url_returns_empty_and_no_call(self):
+        from routes.tailor import _extract_talentnet
+        client = self._client_returning({})
+        out = await _extract_talentnet("https://boards.greenhouse.io/x/jobs/123", client)
+        assert out == ""
+        client.stream.assert_not_called()
+
+    async def test_extracts_jd_and_uses_hardcoded_host_plus_both_headers(self):
+        from routes.tailor import _extract_talentnet, _TALENTNET_API_HOST
+        payload = {"title": {"name": "Data Analyst"},
+                   "location": "Atlanta, GA",
+                   "description": "<p>Hybrid role. Build dashboards.</p>",
+                   "skills": [{"name": "SQL"}, {"name": "Power BI"}]}
+        client = self._client_returning(payload)
+        url = "https://workday.talentnet.community/jobs/7d75925a-410b-4947-b3df-0ad4f14269c4"
+        with patch("routes.tailor.socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("13.33.44.55", 0))]):
+            out = await _extract_talentnet(url, client)
+        assert "Data Analyst" in out
+        assert "Build dashboards" in out
+        assert "SQL" in out and "Power BI" in out
+        assert "<p>" not in out
+        # SSRF guards: host is the hardcoded constant; both headers present; tenant = subdomain
+        method, called_url = client.stream.call_args.args[0], client.stream.call_args.args[1]
+        assert method == "GET"
+        assert called_url == f"https://{_TALENTNET_API_HOST}/api/community/job/7d75925a-410b-4947-b3df-0ad4f14269c4"
+        headers = client.stream.call_args.kwargs["headers"]
+        assert headers["x-tenant"] == "workday"
+        assert headers["x-spa-type"] == "community"
+
+    async def test_malformed_uuid_returns_empty(self):
+        from routes.tailor import _extract_talentnet
+        client = self._client_returning({})
+        out = await _extract_talentnet(
+            "https://workday.talentnet.community/jobs/not-a-uuid-here", client)
+        assert out == ""
+        client.stream.assert_not_called()
+
+    async def test_api_non_200_falls_through(self):
+        from routes.tailor import _extract_talentnet
+        client = self._client_returning({}, status=404)
+        url = "https://workday.talentnet.community/jobs/7d75925a-410b-4947-b3df-0ad4f14269c4"
+        with patch("routes.tailor.socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("13.33.44.55", 0))]):
+            out = await _extract_talentnet(url, client)
+        assert out == ""
