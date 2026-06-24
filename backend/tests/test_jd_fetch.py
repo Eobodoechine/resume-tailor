@@ -395,3 +395,239 @@ class TestExtractTalentnet:
                    return_value=[(2, 1, 6, "", ("13.33.44.55", 0))]):
             out = await _extract_talentnet(url, client)
         assert out == ""
+
+
+# ── DNS-rebinding / IP pinning transport ────────────────────────────────────────
+
+import httpx  # noqa: E402  (after the section comment so it reads close to its use)
+
+
+def _addrinfo(*ips):
+    """socket.getaddrinfo()-style return value for the given IPs."""
+    return [(2, 1, 6, "", (ip, 0)) for ip in ips]
+
+
+class TestPinnedSSRFTransport:
+    """_PinnedSSRFTransport must resolve once, reject internal targets at connect
+    time, and pin the connection to the validated IP while keeping TLS SNI/cert
+    verification bound to the hostname. These unit tests mock the parent
+    transport so no real socket is opened."""
+
+    def _transport(self):
+        from routes.tailor import _PinnedSSRFTransport
+        return _PinnedSSRFTransport()
+
+    async def test_pins_to_resolved_ip_and_preserves_host_and_sni(self):
+        """The crux of the fix: at connect time the URL host is the validated IP,
+        but the Host header and the TLS sni_hostname extension still carry the
+        ORIGINAL hostname — so cert verification runs against the hostname, not
+        the bare IP. After the call the URL is restored to the hostname."""
+        captured = {}
+
+        async def fake_super(self, request):
+            captured["connect_host"] = request.url.host
+            captured["sni"] = request.extensions.get("sni_hostname")
+            captured["host_header"] = request.headers.get("host")
+            return MagicMock()
+
+        t = self._transport()
+        req = httpx.Request("GET", "https://jobs.example.com/listing")
+        with patch("routes.tailor.socket.getaddrinfo", return_value=_addrinfo("13.33.44.55")), \
+             patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_super):
+            await t.handle_async_request(req)
+
+        assert captured["connect_host"] == "13.33.44.55"          # connect to the pinned IP
+        assert captured["sni"] == "jobs.example.com"               # TLS verified against hostname
+        assert captured["host_header"] == "jobs.example.com"       # Host header preserved
+        assert req.url.host == "jobs.example.com"                  # URL restored after connect
+
+    async def test_blocks_when_resolution_is_private(self):
+        """Rebind to a single internal answer: must raise and never reach super()."""
+        from routes.tailor import _PinnedSSRFTransport
+        super_mock = AsyncMock()
+        t = _PinnedSSRFTransport()
+        req = httpx.Request("GET", "https://rebind.example.com/x")
+        with patch("routes.tailor.socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")), \
+             patch.object(httpx.AsyncHTTPTransport, "handle_async_request", super_mock):
+            with pytest.raises(httpx.ConnectError):
+                await t.handle_async_request(req)
+        super_mock.assert_not_awaited()
+
+    async def test_blocks_when_any_resolved_ip_is_private(self):
+        """Split-horizon answer (public + private) must be rejected wholesale."""
+        from routes.tailor import _PinnedSSRFTransport
+        super_mock = AsyncMock()
+        t = _PinnedSSRFTransport()
+        req = httpx.Request("GET", "https://mixed.example.com/x")
+        with patch("routes.tailor.socket.getaddrinfo",
+                   return_value=_addrinfo("13.33.44.55", "10.0.0.5")), \
+             patch.object(httpx.AsyncHTTPTransport, "handle_async_request", super_mock):
+            with pytest.raises(httpx.ConnectError):
+                await t.handle_async_request(req)
+        super_mock.assert_not_awaited()
+
+    async def test_blocks_internal_ip_literal_without_dns(self):
+        """A raw internal-IP URL is blocked directly (no resolution needed)."""
+        from routes.tailor import _PinnedSSRFTransport
+        super_mock = AsyncMock()
+        t = _PinnedSSRFTransport()
+        for ip in ("127.0.0.1", "169.254.169.254", "10.0.0.1", "[::1]"):
+            req = httpx.Request("GET", f"http://{ip}:80/admin")
+            with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", super_mock):
+                with pytest.raises(httpx.ConnectError):
+                    await t.handle_async_request(req)
+        super_mock.assert_not_awaited()
+
+    async def test_allows_public_ip_literal(self):
+        """A public raw-IP URL is allowed through unchanged (SNI left to default)."""
+        from routes.tailor import _PinnedSSRFTransport
+        captured = {}
+
+        async def fake_super(self, request):
+            captured["sni"] = request.extensions.get("sni_hostname")
+            captured["host"] = request.url.host
+            return MagicMock()
+
+        t = _PinnedSSRFTransport()
+        req = httpx.Request("GET", "https://13.33.44.55/listing")
+        with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_super):
+            await t.handle_async_request(req)
+        assert captured["host"] == "13.33.44.55"
+        assert captured["sni"] is None  # raw-IP URL: don't fake a hostname SNI
+
+
+class TestFetchJdRebindEndpoint:
+    """End-to-end: a low-TTL rebind where the pre-flight validator sees a PUBLIC
+    address but the connection-time resolution returns a PRIVATE one must be
+    blocked. Proves the fix isn't defeated by the validator/connector using two
+    separate resolutions."""
+
+    @staticmethod
+    def _app_client():
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from dependencies.auth import require_user, AuthContext
+        from routes import tailor
+
+        user = MagicMock()
+        user.id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        user.email = "t@example.com"
+        app = FastAPI()
+        app.include_router(tailor.router)
+        app.dependency_overrides[require_user] = lambda: AuthContext(user=user, token="tok")
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_rebind_public_then_private_is_blocked(self):
+        calls = {"n": 0}
+
+        def rebinding_getaddrinfo(host, *a, **k):
+            # 1st lookup (pre-flight _validate_fetch_url) → public; afterwards
+            # (the pinned transport's connect-time resolution) → internal.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _addrinfo("13.33.44.55")
+            return _addrinfo("169.254.169.254")
+
+        client = self._app_client()
+        with patch("routes.tailor.socket.getaddrinfo", side_effect=rebinding_getaddrinfo):
+            resp = client.post("/api/tailor/fetch-jd",
+                               json={"url": "https://rebind.attacker.example/job"})
+        # Pre-flight passed (public) but the connection was refused (private) →
+        # the route maps the ConnectError to a 4xx, NOT a fetched 200.
+        assert resp.status_code == 400
+        assert calls["n"] >= 2  # proves a second, connect-time resolution happened
+
+
+class TestTlsHostnameVerificationUnderPinning:
+    """SECURITY-CRITICAL: pinning to an IP must NOT disable TLS hostname
+    verification. Uses a real loopback HTTPS server with trustme-issued certs.
+    _is_blocked_ip is patched so 127.0.0.1 is permitted purely for the test
+    server; getaddrinfo is patched so the hostname resolves to loopback."""
+
+    @staticmethod
+    def _https_server(server_ssl_ctx):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from contextlib import contextmanager
+
+        class _OK(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html><body>job description body content here</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        @contextmanager
+        def _run():
+            srv = HTTPServer(("127.0.0.1", 0), _OK)
+            srv.socket = server_ssl_ctx.wrap_socket(srv.socket, server_side=True)
+            th = threading.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
+            try:
+                yield srv.server_address[1]
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+        return _run()
+
+    @staticmethod
+    def _server_ctx(cert):
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        cert.configure_cert(ctx)
+        return ctx
+
+    async def _fetch(self, url, ca):
+        """Run a request through the real pinned transport, trusting only `ca`,
+        with the hostname resolved to loopback and loopback temporarily allowed."""
+        import tempfile, os
+        from routes.tailor import _PinnedSSRFTransport
+        fd, ca_path = tempfile.mkstemp(suffix=".pem")
+        os.close(fd)
+        ca.cert_pem.write_to_path(ca_path)
+        try:
+            transport = _PinnedSSRFTransport(verify=ca_path)
+            async with httpx.AsyncClient(transport=transport, timeout=10.0) as client:
+                with patch("routes.tailor._is_blocked_ip", return_value=False), \
+                     patch("routes.tailor.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+                    return await client.get(url)
+        finally:
+            os.unlink(ca_path)
+
+    async def test_valid_cert_for_hostname_succeeds_when_pinned_to_ip(self):
+        """Cert SAN matches the hostname → handshake verifies against the
+        hostname (not 127.0.0.1) → request succeeds. This is case (a)."""
+        trustme = pytest.importorskip("trustme")
+        ca = trustme.CA()
+        cert = ca.issue_cert("pinned.test")
+        with self._https_server(self._server_ctx(cert)) as port:
+            resp = await self._fetch(f"https://pinned.test:{port}/job", ca)
+        assert resp.status_code == 200
+        assert "job description body content" in resp.text
+
+    async def test_cert_for_wrong_hostname_is_rejected(self):
+        """Server presents a cert for a DIFFERENT hostname. If verification were
+        silently disabled by pinning, this would wrongly succeed. It must raise."""
+        trustme = pytest.importorskip("trustme")
+        ca = trustme.CA()
+        wrong_cert = ca.issue_cert("not-the-host.test")  # valid CA, wrong name
+        with self._https_server(self._server_ctx(wrong_cert)) as port:
+            with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
+                await self._fetch(f"https://pinned.test:{port}/job", ca)
+
+    async def test_untrusted_ca_is_rejected(self):
+        """Cert name matches the hostname but is signed by a CA we don't trust →
+        must still fail (verify=True is genuinely on, not bypassed)."""
+        trustme = pytest.importorskip("trustme")
+        server_ca = trustme.CA()
+        cert = server_ca.issue_cert("pinned.test")
+        client_trust_ca = trustme.CA()  # a DIFFERENT CA the client trusts
+        with self._https_server(self._server_ctx(cert)) as port:
+            with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
+                await self._fetch(f"https://pinned.test:{port}/job", client_trust_ca)

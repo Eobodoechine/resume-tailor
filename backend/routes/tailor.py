@@ -278,10 +278,13 @@ def _validate_fetch_url(url: str):
     Uses socket.getaddrinfo() and validates EVERY resolved address (all A/AAAA
     records, IPv4 + IPv6) — not just the first IPv4 from gethostbyname(), which a
     host with an extra private record or an IPv6 address could slip past.
-    NOTE: a fully DNS-rebinding-proof fix would pin the validated IP into the
-    httpx connection via a custom transport; combined with fetch_jd's
-    post-redirect re-check, validating every resolved address closes the
-    practical bypasses.
+
+    This is a cheap PRE-FLIGHT check (fast rejection + friendly error messages).
+    The authoritative DNS-rebinding-proof enforcement lives in
+    _PinnedSSRFTransport: it resolves once and pins the connection to that exact
+    IP, so the validator and the connector can no longer disagree (the old TOCTOU
+    where httpx re-resolved a low-TTL name to an internal address after this
+    function approved a public one).
     """
     parsed = urlparse(url)
     scheme = parsed.scheme
@@ -319,6 +322,113 @@ def _validate_fetch_url(url: str):
         if blocked:
             logger.warning("[fetch-jd] blocked internal address  host=%r  ip=%s", hostname, ip_str)
             raise HTTPException(status_code=400, detail="Internal URLs are not allowed.")
+
+
+class _PinnedSSRFTransport(httpx.AsyncHTTPTransport):
+    """SSRF-hardened transport that closes the DNS-rebinding TOCTOU.
+
+    For EVERY request — including each redirect hop, since httpx rebuilds the
+    request and re-enters this transport — it:
+
+      1. Resolves the hostname ONCE via getaddrinfo.
+      2. Rejects the request if ANY resolved address is internal (private /
+         loopback / link-local / reserved / etc.) — defeats split-horizon and
+         rebinding records that mix a public and a private answer.
+      3. Pins the TCP connection to a validated public IP from that same
+         resolution, while forcing TLS SNI **and certificate verification**
+         against the ORIGINAL hostname and preserving the Host header.
+
+    Because httpx/httpcore connect to the exact IP we hand them and never
+    re-resolve, an attacker can no longer rebind the name to an internal
+    address between validation and connect.
+
+    SECURITY-CRITICAL: connecting by IP must NOT weaken TLS. We do this by
+    pinning only the connection origin (`request.url.host`) to the IP and setting
+    the `sni_hostname` request extension to the hostname; httpcore then passes
+    `server_hostname=<hostname>` to the TLS handshake, so cert hostname
+    verification (check_hostname=True, the httpx default) still runs against the
+    real hostname — NOT the bare IP. We never disable verification or connect to
+    a naked-IP URL with default SNI.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if not host:
+            return await super().handle_async_request(request)
+
+        scheme = request.url.scheme
+        port = request.url.port or (443 if scheme == "https" else 80)
+
+        # IP-literal URL: nothing to rebind. Validate it's public and connect
+        # as-is (leave SNI to httpcore's default — for a raw-IP URL the cert is
+        # legitimately checked against that IP).
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            is_ip_literal = False
+        else:
+            is_ip_literal = True
+
+        if is_ip_literal:
+            if _is_blocked_ip(host):
+                logger.warning("[fetch-jd] SSRF blocked at connect — internal IP literal  ip=%s", host)
+                raise httpx.ConnectError(f"Refusing to connect to internal address {host}")
+            return await super().handle_async_request(request)
+
+        # Resolve ONCE — this is the resolution the connection will actually use.
+        try:
+            infos = await asyncio.to_thread(
+                socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
+            )
+        except OSError as exc:
+            raise httpx.ConnectError(f"Could not resolve host {host!r}: {exc}")
+
+        pinned: Optional[str] = None
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                blocked = _is_blocked_ip(ip_str)
+            except ValueError:
+                continue  # unparseable address — skip
+            if blocked:
+                logger.warning(
+                    "[fetch-jd] SSRF blocked at connect — %s resolved to internal %s", host, ip_str
+                )
+                raise httpx.ConnectError(
+                    f"Refusing to connect to {host} — it resolves to internal address {ip_str}"
+                )
+            if pinned is None:
+                pinned = ip_str  # first validated address (preserves getaddrinfo preference order)
+
+        if pinned is None:
+            raise httpx.ConnectError(f"No usable address found for host {host!r}")
+
+        original_url = request.url
+        # Pin the connection target to the validated IP, but keep TLS SNI + cert
+        # verification (and the already-set Host header) bound to the hostname.
+        request.extensions = {**request.extensions, "sni_hostname": host}
+        request.url = original_url.copy_with(host=pinned)
+        try:
+            return await super().handle_async_request(request)
+        finally:
+            # Restore so response.url and relative-redirect resolution use the
+            # hostname, not the pinned IP (the connection is already established).
+            request.url = original_url
+
+
+def _make_fetch_client() -> httpx.AsyncClient:
+    """httpx client used for ALL JD fetches (page + host-specific API extractors).
+
+    Wired with _PinnedSSRFTransport so the SSRF/DNS-rebinding guard applies to
+    the initial request AND every redirect hop. Keeps TLS verification ON
+    (httpx default verify=True) — the transport pins the IP without touching
+    cert validation.
+    """
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=15.0,
+        transport=_PinnedSSRFTransport(),
+    )
 
 
 _BROWSER_UA = (
@@ -523,7 +633,9 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
     """Fetch and extract plain text from a job posting URL.
 
     Strategy (in order):
-    1. SSRF-validate the URL (and any redirect target).
+    1. SSRF pre-flight on the URL (scheme/host/IP) + connect-time IP pinning via
+       _PinnedSSRFTransport (and a post-redirect re-check) — the pinned transport
+       is the authoritative DNS-rebinding guard for every hop.
     2. Host-specific SPA API extractors (TalentNet/Workday community) — these
        boards render the JD only via XHR, so the raw HTML shell is useless.
     3. Branch on Content-Type: parse ATS JSON; reject PDFs with a clear message.
@@ -539,7 +651,11 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
     await asyncio.to_thread(_validate_fetch_url, body.url)
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+        # _make_fetch_client() installs _PinnedSSRFTransport: the validated IP is
+        # pinned into the connection (with TLS SNI/cert still verified against the
+        # hostname), closing the DNS-rebinding TOCTOU on the page fetch AND the
+        # _extract_talentnet API call (both use this same client).
+        async with _make_fetch_client() as client:
             # Strategy: host-specific SPA extractor (short-circuits the shell fetch).
             text = await _extract_talentnet(body.url, client)
 
@@ -572,9 +688,11 @@ async def fetch_jd(request: Request, body: FetchJDRequest, ctx: AuthContext = De
                     logger.warning("[fetch-jd] body exceeded %d-byte cap  user=%s  url=%r",
                                    MAX_FETCH_BYTES, ctx.user.id, body.url)
 
-                # Re-validate the final URL after redirects — a redirect chain
-                # could land on an internal service. (Catches redirect-based
-                # SSRF, not same-name DNS rebinding — see _validate_fetch_url.)
+                # Re-validate the final URL after redirects — defense in depth.
+                # The pinned transport already SSRF-checks every hop at connect
+                # time (including same-name DNS rebinding), but this post-hoc
+                # check on the resolved final URL is cheap and keeps the guard
+                # explicit at the route layer.
                 if final_url != body.url:
                     logger.info("[fetch-jd] followed redirect  user=%s  original=%r  final=%r",
                                 ctx.user.id, body.url, final_url)
