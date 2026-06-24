@@ -227,53 +227,37 @@
   async function synthesizeMaster() {
     const btn = document.getElementById("btn-synthesize");
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Synthesizing... <span id="synth-chars">0</span> chars`;
+    btn.textContent = "Synthesizing… (this takes ~2 min)";
     try {
-      const res = await fetch("/api/master/synthesize", {
-        method: "POST",
-        credentials: "include",
-      });
-      if (res.status === 401) { clearToken(); window.location.href = "/"; return; }
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Synthesis failed");
-      }
+      const kickoff = await apiFetch("/api/master/synthesize", { method: "POST" });
+      const startedAt = new Date(kickoff.started_at);
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let totalChars = 0;
-      const charCounter = document.getElementById("synth-chars");
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop();
-        for (const part of parts) {
-          for (const line of part.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            let evt;
-            try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
-            if (evt.error) throw new Error(evt.error);
-            if (evt.chunk) {
-              totalChars += evt.chunk.length;
-              if (charCounter) charCounter.textContent = totalChars.toLocaleString();
-            }
-            if (evt.done) {
-              showAlert("alert-box", "Master resume updated.", "success");
-              loadDashboard();
-            }
+      // Poll until last_updated is newer than startedAt (max ~5 min)
+      let attempts = 0;
+      while (attempts < 60) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          const master = await apiFetch("/api/master/");
+          if (master.last_updated && new Date(master.last_updated) > startedAt) {
+            showAlert("alert-box", "Master resume updated.", "success");
+            loadDashboard();
+            return;
           }
+        } catch (pollErr) {
+          if (pollErr && pollErr.redirecting) return;
+          // transient error — keep polling
         }
+        const elapsed = Math.round((attempts + 1) * 5);
+        btn.textContent = `Synthesizing… (${elapsed}s elapsed)`;
+        attempts++;
       }
+      showAlert("alert-box", "Synthesis is taking longer than expected — check back in a minute.", "info");
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message || "Synthesis failed. Please try again.", "error");
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "Re-Synthesize Master Resume";
+      btn.textContent = "Re-Synthesize Master Resume";
     }
   }
 

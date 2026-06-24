@@ -1,12 +1,12 @@
 """
 Master resume routes: synthesize, get, and update via gap-filling chat.
 """
-import json
+import asyncio
 import logging
 import time
 import anthropic
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from datetime import datetime, timezone
@@ -68,23 +68,22 @@ def download_master_resume(
     )
 
 
-@router.post("/synthesize")
+@router.post("/synthesize", status_code=202)
 @limiter.limit("5/minute")
 async def synthesize_master(
     request: Request,
-    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(require_user),
 ):
     """
-    Re-synthesize the master resume. Returns SSE stream so Render's 30s proxy
-    idle timeout never fires — bytes flow from token 1. DB upsert runs in
-    BackgroundTasks after the stream closes.
+    Re-synthesize the master resume. Fires an asyncio task and returns 202
+    immediately — the task is immune to client disconnect because it is not
+    tied to the request/response lifecycle. Client polls GET /api/master/ until
+    last_updated is newer than started_at.
     """
     logger.info("[synthesize] START  user=%s", ctx.user.id)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
-    # Validate before opening stream so errors return normal HTTP 4xx
     files = db.table("resume_files") \
         .select("extracted_text, filename") \
         .eq("user_id", str(ctx.user.id)) \
@@ -103,45 +102,34 @@ async def synthesize_master(
 
     profile = _get_profile(db, str(ctx.user.id))
     user_id = str(ctx.user.id)
+    started_at = datetime.now(timezone.utc).isoformat()
 
-    def _upsert_master(content: str) -> None:
-        logger.info("[synthesize] bg-upsert START  user=%s  chars=%d", user_id, len(content))
+    async def _synthesis_task():
+        logger.info("[synthesize] task START  user=%s", user_id)
         try:
-            result = admin.table("master_resumes").upsert({
-                "user_id":      user_id,
-                "content":      content,
-                "last_updated": datetime.now(timezone.utc).isoformat(),
-            }, on_conflict="user_id").execute()
-            rows = len(result.data) if result.data else 0
-            logger.info("[synthesize] bg-upsert OK  user=%s  rows=%d", user_id, rows)
-        except Exception as e:
-            logger.error("[synthesize] bg-upsert FAILED  user=%s  error=%s", user_id, e, exc_info=True)
-
-    async def _event_stream():
-        accumulated = ""
-        try:
+            accumulated = ""
             async for chunk in claude_service.synthesize_master_resume_stream(texts, profile):
                 accumulated += chunk
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-        except anthropic.APITimeoutError:
-            logger.error("[synthesize] stream timeout  user=%s  chars=%d", user_id, len(accumulated))
-            yield f"data: {json.dumps({'error': 'AI request timed out. Please try again.'})}\n\n"
-            return
-        except Exception as e:
-            logger.error("[synthesize] stream error  user=%s  error=%s", user_id, e, exc_info=True)
-            yield f"data: {json.dumps({'error': 'The AI service had an error. Please try again.'})}\n\n"
-            return
+            if accumulated:
+                result = admin.table("master_resumes").upsert({
+                    "user_id":      user_id,
+                    "content":      accumulated,
+                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                }, on_conflict="user_id").execute()
+                rows = len(result.data) if result.data else 0
+                logger.info("[synthesize] task SAVED  user=%s  chars=%d  rows=%d", user_id, len(accumulated), rows)
+            else:
+                logger.warning("[synthesize] task produced empty output  user=%s", user_id)
+        except BaseException as e:
+            logger.error("[synthesize] task FAILED  user=%s  type=%s  error=%s",
+                         user_id, type(e).__name__, e, exc_info=True)
 
-        if accumulated:
-            background_tasks.add_task(_upsert_master, accumulated)
-        logger.info("[synthesize] stream COMPLETE  user=%s  chars=%d", user_id, len(accumulated))
-        yield f"data: {json.dumps({'done': True})}\n\n"
+    task = asyncio.create_task(_synthesis_task())
+    # Suppress "task exception was never retrieved" if task dies before caller checks
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.done() and t.exception() else None)
 
-    return StreamingResponse(
-        _event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    logger.info("[synthesize] task queued  user=%s", user_id)
+    return {"status": "queued", "started_at": started_at}
 
 
 MAX_HISTORY_TURNS = 20  # cap conversation history to prevent token bloat
