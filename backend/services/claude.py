@@ -297,7 +297,7 @@ async def synthesize_master_resume_stream(resume_texts: list[str], profile: dict
     never fires (bytes flow from token 1). Uses synthesis_client (max_retries=0)
     to prevent 3× timeout compounding on large inputs.
 
-    Caller wraps chunks in SSE and moves DB upsert to BackgroundTasks.
+    Caller (a fire-and-forget asyncio.create_task) accumulates chunks and upserts the result.
     """
     logger.info(
         "synthesize-stream: START  total_files=%d  file_sizes=%s",
