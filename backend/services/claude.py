@@ -14,8 +14,15 @@ logger = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # Async client for streaming endpoints — never blocks the event loop (TD-17)
 async_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+# Synthesis-only async client: max_retries=0 prevents 3×timeout compounding.
+# tailor_resume() and gap_fill_chat() keep the shared client's default retries.
+synthesis_client = anthropic.AsyncAnthropic(
+    api_key=ANTHROPIC_API_KEY,
+    max_retries=0,
+)
 
-API_TIMEOUT        = 60.0          # seconds — raises anthropic.APITimeoutError on breach (TD-01)
+API_TIMEOUT        = 60.0          # seconds — tailor + gap-fill (TD-01)
+SYNTHESIS_TIMEOUT  = 180.0         # seconds — 210k-char input + 8k output needs ~90-120s real time
 MAX_SYNTHESIS_CHARS = 400_000       # ~100k tokens — safe for Claude's 200k context window (TD-02)
 
 
@@ -81,47 +88,7 @@ def synthesize_master_resume(resume_texts: list[str], profile: dict) -> str:
     )
     name = profile.get("full_name", "")
     contact_block = _build_contact_block(profile)
-
-    prompt = f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
-Your job is to synthesize them into a single, comprehensive MASTER RESUME in structured plain text.
-
-CONTENT RULES:
-- Include ALL experience, skills, education, certifications, and achievements found across all files
-- Remove duplicates but keep the most detailed version of each entry
-- Do NOT invent or embellish anything — only use what is explicitly stated
-- Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
-- PRESERVE EXACT TOOL AND SYSTEM NAMES as they appear in the source files — do not normalize,
-  abbreviate, or paraphrase. ATS systems match on exact strings.
-  When a tool name appears multiple times across files, keep the most complete version.
-
-STRICT OUTPUT FORMAT:
-
-1. Header (first lines, before any section):
-{contact_block}
-
-2. Section headers: EXACTLY these words in ALL CAPS on their own line:
-   SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (only if present)
-
-3. EXPERIENCE section:
-   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
-   - NO sub-section headers inside a role — only bullet points
-   - Every bullet starts with "•"
-
-4. SKILLS section:
-   - Each category on ONE line: Category Name: item1, item2, item3
-   - Do NOT write multi-line paragraphs for skills
-
-5. EDUCATION:
-   - Only actual degrees from the resume: Degree | School | Year
-   - If no formal degree exists in the source material, omit EDUCATION entirely
-
-Contact info to include at the top:
-{contact_block}
-
-Resume files to synthesize:
-{combined}
-
-Output the complete master resume now:"""
+    prompt = _build_synthesis_prompt(name, contact_block, combined)
 
     t0 = time.monotonic()
     try:
@@ -267,6 +234,162 @@ Output the complete master resume now:"""
         )
 
     return text
+
+
+def _build_synthesis_prompt(name: str, contact_block: str, combined: str) -> str:
+    """Single source of truth for the synthesis prompt — used by both sync and streaming paths."""
+    return f"""You are an expert resume writer. Below are one or more resume files uploaded by {name}.
+Your job is to synthesize them into a single, comprehensive MASTER RESUME in structured plain text.
+
+CONTENT RULES:
+- Include ALL experience, skills, education, certifications, and achievements found across all files
+- Do NOT invent or embellish anything — only use what is explicitly stated
+- Write bullet points in strong verb-led format (Managed, Built, Led, Drove, etc.)
+- PRESERVE EXACT TOOL AND SYSTEM NAMES as they appear in the source files — do not normalize,
+  abbreviate, or paraphrase. ATS systems match on exact strings.
+  When a tool name appears multiple times across files, keep the most complete version.
+- DEDUPLICATION RULE — CRITICAL: The source may contain multiple targeted versions of the
+  same role (same employer, overlapping or identical dates). This happens when resumes were
+  tailored for different job types and the targeted versions were later compiled back into
+  one document. When the same employer appears more than once:
+    1. DO NOT merge bullets from different targeted versions — merging produces a chimera
+       that misrepresents both the person's actual work and the role's true nature.
+    2. SELECT the single version with the most technically specific, data-driven bullets
+       (specific tool names, systems, metrics, programming languages, methodologies).
+    3. DISCARD the other version(s) entirely.
+  Example: if EY appears twice — once with Python/SAP/Snowflake bullets and once with
+  generic real-estate framing bullets — keep the Python/SAP/Snowflake version only.
+- SUMMARY RULE: If the source contains multiple SUMMARY or PROFESSIONAL SUMMARY sections
+  (e.g. "1. Real Estate Analytics" and "2. Data Technology Consulting"), write ONE unified
+  summary that reflects the person's ACTUAL background. Do not copy any single targeted
+  summary verbatim; synthesize from the experience itself.
+
+STRICT OUTPUT FORMAT:
+
+1. Header (first lines, before any section):
+{contact_block}
+
+2. Section headers: EXACTLY these words in ALL CAPS on their own line:
+   SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS, PROJECTS (only if present)
+
+3. EXPERIENCE section:
+   - Each role header: Job Title | Company Name | Month Year – Month Year  (exactly 2 pipe characters)
+   - NO sub-section headers inside a role — only bullet points
+   - Every bullet starts with "•"
+
+4. SKILLS section:
+   - Each category on ONE line: Category Name: item1, item2, item3
+   - Do NOT write multi-line paragraphs for skills
+
+5. EDUCATION:
+   - Only actual degrees from the resume: Degree | School | Year
+   - If no formal degree exists in the source material, omit EDUCATION entirely
+
+Resume files to synthesize:
+{combined}
+
+Output the complete master resume now:"""
+
+
+async def synthesize_master_resume_stream(resume_texts: list[str], profile: dict):
+    """
+    Async generator — streams synthesis chunks so Render's 30s proxy idle timeout
+    never fires (bytes flow from token 1). Uses synthesis_client (max_retries=0)
+    to prevent 3× timeout compounding on large inputs.
+
+    Caller wraps chunks in SSE and moves DB upsert to BackgroundTasks.
+    """
+    logger.info(
+        "synthesize-stream: START  total_files=%d  file_sizes=%s",
+        len(resume_texts), [len(t) for t in resume_texts],
+    )
+    running = 0
+    capped: list[str] = []
+    for i, t in enumerate(resume_texts):
+        file_chars = len(t)
+        if running + file_chars > MAX_SYNTHESIS_CHARS:
+            remaining = MAX_SYNTHESIS_CHARS - running
+            if remaining > 500:
+                capped.append(t[:remaining])
+                running = MAX_SYNTHESIS_CHARS
+                logger.warning("synthesize-stream: file %d TRUNCATED  truncated_to=%d", i + 1, remaining)
+            else:
+                logger.warning("synthesize-stream: file %d SKIPPED  chars=%d", i + 1, file_chars)
+            continue
+        capped.append(t)
+        running += file_chars
+    if not capped:
+        capped = [resume_texts[0][:MAX_SYNTHESIS_CHARS]]
+
+    combined = "\n\n---RESUME FILE---\n\n".join(capped)
+    name = profile.get("full_name", "")
+    contact_block = _build_contact_block(profile)
+    prompt = _build_synthesis_prompt(name, contact_block, combined)
+
+    accumulated = ""
+    MAX_CONTINUATIONS = 4
+    pass_num = 0
+    messages: list[dict] = [{"role": "user", "content": prompt}]
+
+    while pass_num <= MAX_CONTINUATIONS:
+        t0 = time.monotonic()
+        stop_reason = None
+        pass_text = ""
+
+        async with synthesis_client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=8000,
+            messages=messages,
+            timeout=SYNTHESIS_TIMEOUT,
+        ) as stream:
+            async for chunk in stream.text_stream:
+                pass_text += chunk
+                accumulated += chunk
+                yield chunk
+            final_msg = await stream.get_final_message()
+            stop_reason = final_msg.stop_reason
+            output_tokens = final_msg.usage.output_tokens
+
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "synthesize-stream: pass %d COMPLETE  stop_reason=%s  output_tokens=%d  ms=%d  accumulated=%d",
+            pass_num, stop_reason, output_tokens, ms, len(accumulated),
+        )
+
+        if stop_reason != "max_tokens":
+            break
+
+        if pass_num == MAX_CONTINUATIONS:
+            logger.error("synthesize-stream: hit MAX_CONTINUATIONS — resume may be incomplete  chars=%d", len(accumulated))
+            break
+
+        # Trim incomplete seam line before continuation
+        lines = accumulated.rstrip().splitlines()
+        seam_text = accumulated
+        if lines:
+            last_line = lines[-1].rstrip()
+            looks_complete = (
+                last_line.endswith((".", ",", ")", "|", "–", "-"))
+                or last_line.isupper()
+                or last_line.count("|") >= 2
+            )
+            if not looks_complete:
+                seam_text = "\n".join(lines[:-1])
+                accumulated = seam_text
+                logger.info("synthesize-stream: trimmed incomplete seam: %r", last_line)
+
+        pass_num += 1
+        messages = [
+            {"role": "user",      "content": prompt},
+            {"role": "assistant", "content": seam_text},
+            {"role": "user",      "content": "Continue exactly where you stopped. Do not repeat anything already written."},
+        ]
+
+    sections = [h for h in ("SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION") if h in accumulated]
+    role_lines = [ln for ln in accumulated.splitlines() if ln.count("|") >= 2]
+    logger.info("synthesize-stream: DONE  sections=%s  roles=%d  chars=%d", sections, len(role_lines), len(accumulated))
+    if "EXPERIENCE" not in accumulated:
+        logger.error("synthesize-stream: EXPERIENCE section MISSING")
 
 
 def _build_tailor_prompt(

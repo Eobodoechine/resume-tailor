@@ -227,14 +227,50 @@
   async function synthesizeMaster() {
     const btn = document.getElementById("btn-synthesize");
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Synthesizing...`;
+    btn.innerHTML = `<span class="spinner"></span> Synthesizing... <span id="synth-chars">0</span> chars`;
     try {
-      const res = await apiFetch("/api/master/synthesize", { method: "POST" });
-      showAlert("alert-box", "Master resume updated.", "success");
-      loadDashboard();
+      const res = await fetch("/api/master/synthesize", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (res.status === 401) { clearToken(); window.location.href = "/"; return; }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Synthesis failed");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let totalChars = 0;
+      const charCounter = document.getElementById("synth-chars");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
+        for (const part of parts) {
+          for (const line of part.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            let evt;
+            try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
+            if (evt.error) throw new Error(evt.error);
+            if (evt.chunk) {
+              totalChars += evt.chunk.length;
+              if (charCounter) charCounter.textContent = totalChars.toLocaleString();
+            }
+            if (evt.done) {
+              showAlert("alert-box", "Master resume updated.", "success");
+              loadDashboard();
+            }
+          }
+        }
+      }
     } catch (e) {
       if (e && e.redirecting) return;
-      showAlert("alert-box", e.message, "error");
+      showAlert("alert-box", e.message || "Synthesis failed. Please try again.", "error");
     } finally {
       btn.disabled = false;
       btn.innerHTML = "Re-Synthesize Master Resume";
