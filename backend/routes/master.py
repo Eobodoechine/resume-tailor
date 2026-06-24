@@ -1,11 +1,12 @@
 """
 Master resume routes: synthesize, get, and update via gap-filling chat.
 """
+import json
 import logging
 import time
 import anthropic
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from datetime import datetime, timezone
@@ -69,16 +70,21 @@ def download_master_resume(
 
 @router.post("/synthesize")
 @limiter.limit("5/minute")
-def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)):
+async def synthesize_master(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_user),
+):
     """
-    Re-synthesize the master resume from all uploaded resume files.
-    Call this after uploading new files.
+    Re-synthesize the master resume. Returns SSE stream so Render's 30s proxy
+    idle timeout never fires — bytes flow from token 1. DB upsert runs in
+    BackgroundTasks after the stream closes.
     """
     logger.info("[synthesize] START  user=%s", ctx.user.id)
     db = get_client(ctx.token)
     admin = get_admin_client()
 
-    # Pull all extracted texts
+    # Validate before opening stream so errors return normal HTTP 4xx
     files = db.table("resume_files") \
         .select("extracted_text, filename") \
         .eq("user_id", str(ctx.user.id)) \
@@ -92,45 +98,50 @@ def synthesize_master(request: Request, ctx: AuthContext = Depends(require_user)
     logger.info("[synthesize] found %d file(s) with extracted text (of %d total)  user=%s",
                 len(texts), len(files.data), ctx.user.id)
     if not texts:
-        logger.warning("[synthesize] 400 no extracted text in any file  user=%s", ctx.user.id)
+        logger.warning("[synthesize] 400 no extracted text  user=%s", ctx.user.id)
         raise HTTPException(status_code=400, detail="Could not extract text from uploaded files.")
 
     profile = _get_profile(db, str(ctx.user.id))
-    logger.debug("[synthesize] profile loaded  user=%s  has_profile=%s", ctx.user.id, bool(profile))
+    user_id = str(ctx.user.id)
 
-    # Synthesize via Claude
-    logger.info("[synthesize] calling Claude  user=%s  file_count=%d", ctx.user.id, len(texts))
-    try:
-        t0 = time.monotonic()
-        master_content = claude_service.synthesize_master_resume(texts, profile)
-        ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[synthesize] Claude OK  user=%s  output_chars=%d  ms=%d",
-                    ctx.user.id, len(master_content), ms)
-    except anthropic.APITimeoutError:
-        logger.error("[synthesize] 504 Claude timeout  user=%s", ctx.user.id)
-        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
-    except Exception as e:
-        logger.error("[synthesize] 502 Claude error  user=%s  error=%s", ctx.user.id, e, exc_info=True)
-        raise HTTPException(status_code=502, detail="The AI service had an error. Please try again.")
+    def _upsert_master(content: str) -> None:
+        logger.info("[synthesize] bg-upsert START  user=%s  chars=%d", user_id, len(content))
+        try:
+            result = admin.table("master_resumes").upsert({
+                "user_id":      user_id,
+                "content":      content,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="user_id").execute()
+            rows = len(result.data) if result.data else 0
+            logger.info("[synthesize] bg-upsert OK  user=%s  rows=%d", user_id, rows)
+        except Exception as e:
+            logger.error("[synthesize] bg-upsert FAILED  user=%s  error=%s", user_id, e, exc_info=True)
 
-    # Upsert master resume — single round trip, no TOCTOU race if two requests
-    # hit synthesize concurrently (both would have hit the empty-branch and tried
-    # to insert, with one failing on the unique constraint).
-    logger.info("[synthesize] upserting to DB  user=%s  chars=%d", ctx.user.id, len(master_content))
-    try:
-        upsert_result = admin.table("master_resumes").upsert({
-            "user_id":      str(ctx.user.id),
-            "content":      master_content,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
-        }, on_conflict="user_id").execute()
-        rows_affected = len(upsert_result.data) if upsert_result.data else 0
-        logger.info("[synthesize] DB upsert OK  user=%s  rows=%d", ctx.user.id, rows_affected)
-    except Exception as e:
-        logger.error("[synthesize] DB upsert FAILED  user=%s  error=%s", ctx.user.id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to save master resume. Please try again.")
+    async def _event_stream():
+        accumulated = ""
+        try:
+            async for chunk in claude_service.synthesize_master_resume_stream(texts, profile):
+                accumulated += chunk
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        except anthropic.APITimeoutError:
+            logger.error("[synthesize] stream timeout  user=%s  chars=%d", user_id, len(accumulated))
+            yield f"data: {json.dumps({'error': 'AI request timed out. Please try again.'})}\n\n"
+            return
+        except Exception as e:
+            logger.error("[synthesize] stream error  user=%s  error=%s", user_id, e, exc_info=True)
+            yield f"data: {json.dumps({'error': 'The AI service had an error. Please try again.'})}\n\n"
+            return
 
-    logger.info("[synthesize] COMPLETE  user=%s", ctx.user.id)
-    return {"message": "Master resume synthesized", "preview": master_content[:500] + "..."}
+        if accumulated:
+            background_tasks.add_task(_upsert_master, accumulated)
+        logger.info("[synthesize] stream COMPLETE  user=%s  chars=%d", user_id, len(accumulated))
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 MAX_HISTORY_TURNS = 20  # cap conversation history to prevent token bloat
