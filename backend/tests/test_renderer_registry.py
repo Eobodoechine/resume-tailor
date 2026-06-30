@@ -26,10 +26,10 @@ class TestGetRenderer:
         assert hasattr(renderer, "render")
 
     def test_unknown_key_falls_back_to_default(self):
-        from renderers.registry import get_renderer, RENDERERS, DEFAULT_TEMPLATE
+        from renderers.registry import get_renderer, DEFAULT_TEMPLATE
         renderer = get_renderer("does_not_exist_xyz")
-        default_cls = RENDERERS[DEFAULT_TEMPLATE]
-        assert isinstance(renderer, default_cls)
+        default_renderer = get_renderer(DEFAULT_TEMPLATE)
+        assert type(renderer) is type(default_renderer)
 
     def test_none_key_does_not_raise(self):
         from renderers.registry import get_renderer

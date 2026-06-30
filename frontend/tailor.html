@@ -778,6 +778,17 @@
     .coach-msg-ai p:last-child { margin-bottom: 0; }
 
     /* Update notice in Stage 4 */
+    .coach-update-pending {
+      font-size: 0.75rem;
+      color: #92400e;
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin: 6px 0;
+      text-align: center;
+    }
+
     .coach-update-notice {
       background: #ecfdf5;
       border: 1px solid #6ee7b7;
@@ -920,7 +931,7 @@
     <details class="jd-manual-toggle" id="jd-manual-details">
       <summary>or paste the job description manually</summary>
       <div style="margin-top:8px;">
-        <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:160px;"></textarea>
+        <textarea id="jd" placeholder="Paste the full job description here..." style="min-height:160px;" maxlength="15000"></textarea>
       </div>
     </details>
 
@@ -945,6 +956,7 @@
     <div id="left-panel">
       <div id="left-panel-header">
         <span id="resume-context-label"></span>
+        <span class="mobile-only resume-hidden-notice">Preview hidden on mobile — use Download PDF to view your resume.</span>
         <button id="btn-download-pdf" class="btn-download-prominent" onclick="downloadPDF()">Download PDF</button>
       </div>
       <div id="left-panel-body">
@@ -1102,8 +1114,8 @@
     }
 
     let metaHtml = "";
-    if (role    ) metaHtml += `<span>${role}</span>`;
-    if (company ) metaHtml += (metaHtml ? " · " : "") + `at <span>${company}</span>`;
+    if (role    ) metaHtml += `<span>${escapeHtml(role)}</span>`;
+    if (company ) metaHtml += (metaHtml ? " · " : "") + `at <span>${escapeHtml(company)}</span>`;
     if (!metaHtml) metaHtml = "Job description ready — review and generate.";
 
     document.getElementById("confirm-meta-text").innerHTML  = metaHtml;
@@ -1185,6 +1197,10 @@
       console.log("[fetchJD] OK  text_chars=" + (res.text || "").length +
         "  warning=" + (res.warning || "none"));
       // Store fetched text in the hidden textarea so getJDText() picks it up
+      if (!res.text) {
+        showAlert("alert-box", "Couldn't extract job description from that URL — paste it manually instead.", "error");
+        return;
+      }
       document.getElementById("jd-fetched").value = res.text;
       jdMode = "fetched";
       showConfirmCard(res.text, res.warning || null);
@@ -1312,6 +1328,15 @@
               // Issue 8: post-process plain-text stream into formatted HTML
               const fullText = resultText.textContent;
               renderResumeText(fullText);
+              // L5: block download if streaming produced no resume content
+              const resumeText = (document.getElementById("resume-text-display")?.textContent || "").trim();
+              if (!resumeText) {
+                showAlert("alert-box", "Generation produced no content — please try again.", "error");
+                currentRecordId = null; // block download
+                setStep(1);
+                document.getElementById("stage4-gen-progress").style.display = "none";
+                return;
+              }
               // Item 10: compute and show what-changed card
               showWhatChanged(fullText, masterContent);
               setStep(3);
@@ -1320,6 +1345,46 @@
               // Try to load the HTML preview (only works when RESUME_PDF_ENGINE=playwright)
               loadPreview(evt.id);
             }
+          }
+        }
+      }
+
+      // J2: Flush any remaining buffered SSE data (server may omit trailing \n\n)
+      if (buffer.trim()) {
+        for (const line of buffer.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
+
+          if (evt.error) {
+            throw new Error(evt.error);
+          }
+          if (evt.chunk) {
+            resultText.textContent += evt.chunk;
+            updateGenProgress(resultText.textContent);
+          }
+          if (evt.done) {
+            if (!evt.id) {
+              showAlert("alert-box", "Resume generated but couldn't be saved — please refresh and try again.", "error");
+              setStep(1);
+              return;
+            }
+            currentRecordId = evt.id;
+            document.getElementById("stage4-gen-progress").style.display = "none";
+            const fullText = resultText.textContent;
+            renderResumeText(fullText);
+            const resumeText = (document.getElementById("resume-text-display")?.textContent || "").trim();
+            if (!resumeText) {
+              showAlert("alert-box", "Generation produced no content — please try again.", "error");
+              currentRecordId = null;
+              setStep(1);
+              document.getElementById("stage4-gen-progress").style.display = "none";
+              return;
+            }
+            showWhatChanged(fullText, masterContent);
+            setStep(3);
+            startRefineChat({ jobTitle: title, company });
+            loadPreview(evt.id);
           }
         }
       }
@@ -1447,6 +1512,9 @@
     } else if (role === "user") {
       div.className = "coach-msg-user";
       div.textContent = text;
+    } else if (role === "update-pending") {
+      div.className = "coach-update-pending";
+      div.textContent = text;
     } else {
       // update-notice / other
       div.className = "coach-update-notice";
@@ -1536,6 +1604,8 @@
       if (res.updated_content) {
         renderResumeText(res.updated_content);
         addUpdateNotice();
+      } else {
+        addMessage("Your resume hasn't been updated yet — answer the question above to apply changes.", "update-pending");
       }
     } catch (e) {
       document.getElementById("typing-indicator")?.remove();
@@ -1547,27 +1617,36 @@
     }
   }
 
-  function applyQuickEdit() {
-    const removeInput = document.getElementById("input-remove");
-    const addInput    = document.getElementById("input-add");
-    const removeValue = removeInput.value.trim();
-    const addValue    = addInput.value.trim();
+  async function applyQuickEdit() {
+    const btn = document.getElementById("btn-apply-quick-edit");
+    if (btn) btn.disabled = true;
+    try {
+      const removeInput = document.getElementById("input-remove");
+      const addInput    = document.getElementById("input-add");
+      const removeValue = removeInput.value.trim();
+      const addValue    = addInput.value.trim();
 
-    if (!removeValue && !addValue) return;
+      if (!removeValue && !addValue) {
+        showAlert("alert-box", "Type what to remove or what to add before applying a quick edit.", "error");
+        return;
+      }
 
-    let message = "Please make these targeted changes to the resume:";
-    if (removeValue) message += "\nRemove: " + removeValue;
-    if (addValue)    message += "\nAdd or emphasize: " + addValue;
+      let message = "Please make these targeted changes to the resume:";
+      if (removeValue) message += "\nRemove: " + removeValue;
+      if (addValue)    message += "\nAdd or emphasize: " + addValue;
 
-    // Populate the refine input and trigger sendRefine
-    const refineInput = document.getElementById("refine-input");
-    refineInput.value = message;
+      // Populate the refine input and trigger sendRefine
+      const refineInput = document.getElementById("refine-input");
+      refineInput.value = message;
 
-    // Clear the quick-edit inputs
-    removeInput.value = "";
-    addInput.value    = "";
+      // Clear the quick-edit inputs
+      removeInput.value = "";
+      addInput.value    = "";
 
-    sendRefine();
+      await sendRefine();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   function addUpdateNotice() {
@@ -1593,13 +1672,22 @@
         credentials: "include",
         body: fd
       });
+      if (res.status === 401) {
+        clearToken?.();
+        window.location.href = "/";
+        return;
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Upload failed" }));
         throw new Error(err.detail || "Upload failed");
       }
       // Auto-synthesize so the coach picks up the new content
-      await apiFetch("/api/master/synthesize", { method: "POST" });
-      addMessage("✓ Master resume updated — coach now has the latest version.", "coach");
+      try {
+        await apiFetch("/api/master/synthesize", { method: "POST" });
+        addMessage("✓ Master resume updated — coach now has the latest version.", "coach");
+      } catch (_synthErr) {
+        addMessage("File uploaded — but the coach refresh failed. Try sending a message to re-sync.", "coach");
+      }
     } catch (e) {
       addMessage(`Upload failed: ${e.message}`, "coach");
     } finally {
@@ -1661,6 +1749,9 @@
       textDisplay.style.display = "block";
       document.getElementById("preview-frame").style.display = "none";
       renderResumeText(record.tailored_content || "");
+      if (!record.tailored_content) {
+        showAlert("alert-box", "This record has no content — try generating again.", "warning");
+      }
 
       // Set the current record ID so the refine chat and PDF download work
       currentRecordId = record.id;
@@ -1850,7 +1941,10 @@
   // safeFilePart is defined in app.js (shared utility — no duplicate here).
 
   async function downloadPDF() {
-    if (!currentRecordId) return;
+    if (!currentRecordId) {
+      showAlert("alert-box", "Generate a resume first before downloading.", "error");
+      return;
+    }
     const btn = document.getElementById("btn-download-pdf");
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-color:rgba(255,255,255,0.3);border-top-color:white;"></span> Building…`;

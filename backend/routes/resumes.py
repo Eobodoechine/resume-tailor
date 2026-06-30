@@ -106,10 +106,13 @@ async def upload_resume(
 
     # Validate MIME type (defense-in-depth alongside extension check)
     content_type = file.content_type or ""
-    if content_type and content_type not in ALLOWED_MIME_TYPES:
+    if not content_type or content_type not in ALLOWED_MIME_TYPES:
         logger.warning("[resumes] upload 400 bad MIME  user=%s  filename=%r  content_type=%s",
                        ctx.user.id, safe_filename, content_type)
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"File must be a PDF or DOCX (got Content-Type: {content_type or 'none'}). Only application/pdf and application/vnd.openxmlformats-officedocument.wordprocessingml.document are accepted.",
+        )
 
     # Enforce file size limit BEFORE reading the entire payload into memory
     file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)

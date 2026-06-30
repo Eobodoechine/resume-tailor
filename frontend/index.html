@@ -79,7 +79,10 @@
     const _errParam = new URLSearchParams(window.location.search).get("error");
     if (_errParam) {
       console.log("[index] showing redirect error  message=" + _errParam);
-      showAlert("alert-box", _errParam, "error");
+      const _errMessages = {
+        "magic_link_failed": "Sign-in failed — your link may have expired. Request a new one below.",
+      };
+      showAlert("alert-box", _errMessages[_errParam] || "Something went wrong — please try again.", "error");
     }
   } catch (e) {
     console.error("[index] failed to read ?error= param  search=" + window.location.search + "  error=" + e);
@@ -97,6 +100,10 @@
   async function sendMagicLink() {
     const email = document.getElementById("login-email").value.trim();
     if (!email) return showAlert("alert-box", "Please enter your email.", "error");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showAlert("alert-box", "Please enter a valid email address.", "error");
+      return;
+    }
     const btn = document.querySelector('#panel-login .btn-primary');
     btn.disabled = true;
     btn.textContent = "Sending…";
@@ -113,11 +120,12 @@
       const box = document.getElementById("alert-box");
       box.innerHTML = "";
       const msg = document.createElement("div");
+      msg.id = "login-confirm-card";
       msg.style.cssText = "background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:20px;text-align:center;";
       msg.innerHTML = `<div style="font-size:1.5rem;margin-bottom:8px;">✅</div>
         <strong>Check your email</strong>
         <p style="margin:8px 0 16px;color:#6b7280;font-size:14px;">We sent a magic link to <strong>${email}</strong>.<br>Click the link in the email to sign in.</p>
-        <button onclick="document.getElementById('panel-login').style.display='block';this.parentNode.parentNode.innerHTML='';document.querySelector('#panel-login .btn-primary').disabled=false;document.querySelector('#panel-login .btn-primary').textContent='Send Magic Link';"
+        <button onclick="document.getElementById('panel-login').style.display='block';document.getElementById('login-confirm-card').innerHTML='';document.querySelector('#panel-login .btn-primary').disabled=false;document.querySelector('#panel-login .btn-primary').textContent='Send Magic Link';"
           style="background:none;border:none;color:#6b7280;font-size:13px;cursor:pointer;text-decoration:underline;">
           Wrong email? Try again
         </button>`;

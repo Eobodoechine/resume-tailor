@@ -13,7 +13,7 @@
   <a href="/dashboard" class="nav-brand">Resume Tailor</a>
   <div class="nav-links">
     <a href="/dashboard">Dashboard</a>
-    <a href="/admin-panel" class="active">Admin</a>
+    <a href="/admin" class="active">Admin</a>
     <a href="#" onclick="logout()">Sign Out</a>
   </div>
 </nav>
@@ -35,6 +35,7 @@
   </div>
 
   <div class="card" style="padding:0;overflow:hidden;">
+    <div style="overflow-x:auto;">
     <table>
       <thead>
         <tr>
@@ -50,6 +51,7 @@
         <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">Loading...</td></tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <!-- Users section -->
@@ -76,6 +78,11 @@
 <script src="/static/app.js?v=11"></script>
 <script>
   requireAuth();
+  // Only admins may view this page
+  (async () => {
+    const res = await apiFetch("/api/auth/is-admin");
+    if (!res.is_admin) window.location.replace("/dashboard");
+  })();
 
   let currentFilter = "pending";
 
@@ -136,14 +143,14 @@
           btnApprove.style.cssText = "font-size:12px;padding:5px 10px;margin-right:6px";
           btnApprove.textContent = "Approve";
           btnApprove.dataset.id = r.id;
-          btnApprove.addEventListener("click", () => approve(r.id));
+          btnApprove.addEventListener("click", () => approve(r.id, btnApprove, btnReject));
 
           const btnReject = document.createElement("button");
           btnReject.className = "btn btn-danger";
           btnReject.style.cssText = "font-size:12px;padding:5px 10px";
           btnReject.textContent = "Reject";
           btnReject.dataset.id = r.id;
-          btnReject.addEventListener("click", () => reject(r.id));
+          btnReject.addEventListener("click", () => reject(r.id, btnApprove, btnReject));
 
           tdActions.appendChild(btnApprove);
           tdActions.appendChild(btnReject);
@@ -160,7 +167,10 @@
     }
   }
 
-  async function approve(id) {
+  async function approve(id, approveBtn, rejectBtn) {
+    approveBtn.disabled = true;
+    rejectBtn.disabled = true;
+    approveBtn.textContent = "Approving…";
     try {
       const res = await apiFetch("/api/admin/approve", { method: "POST", body: JSON.stringify({ request_id: id }) });
       showAlert("alert-box", `✓ ${res.message}`, "success");
@@ -168,17 +178,28 @@
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
+    } finally {
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+      approveBtn.textContent = "Approve";
     }
   }
 
-  async function reject(id) {
+  async function reject(id, approveBtn, rejectBtn) {
     if (!confirm("Reject this request?")) return;
+    approveBtn.disabled = true;
+    rejectBtn.disabled = true;
+    rejectBtn.textContent = "Rejecting…";
     try {
       await apiFetch("/api/admin/reject", { method: "POST", body: JSON.stringify({ request_id: id }) });
       loadRequests(currentFilter);
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
+    } finally {
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+      rejectBtn.textContent = "Reject";
     }
   }
 

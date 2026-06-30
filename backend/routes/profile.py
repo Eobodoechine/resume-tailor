@@ -1,7 +1,8 @@
 """
 Profile routes: read and update user profile info.
 """
-from fastapi import APIRouter, Depends, Request
+import re as _re
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone
@@ -57,6 +58,17 @@ def update_profile(request: Request, body: ProfileUpdate, ctx: AuthContext = Dep
     updates = {k: v for k, v in body.model_dump().items() if v is not None and v != ""}
     if not updates:
         return {"message": "No changes"}
+
+    for field, pattern in [
+        ("linkedin_url", r"^https?://(?:www\.)?linkedin\.com/"),
+        ("website", r"^https?://"),
+    ]:
+        val = updates.get(field)
+        if val and not _re.match(pattern, val, _re.IGNORECASE):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} must be a valid https:// URL (linkedin_url must be a linkedin.com link).",
+            )
 
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
 

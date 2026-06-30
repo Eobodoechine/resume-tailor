@@ -91,6 +91,8 @@
 
 <script src="/static/app.js?v=11"></script>
 <script>
+  let _synthesizing = false;
+
   // If a magic link token is in the URL hash, app.js is mid-exchange —
   // the cookie isn't set yet so every API call would 401. Do nothing here;
   // the IIFE in app.js will set the cookie then reload the page cleanly.
@@ -122,29 +124,33 @@
 
   async function loadDashboard() {
     try {
-      const [profile, files, history, master] = await Promise.all([
+      const [profileRes, filesRes, historyRes, masterRes] = await Promise.allSettled([
         apiFetch("/api/profile/"),
         apiFetch("/api/resumes/"),
         apiFetch("/api/tailor/history?limit=1"),   // only need the total count
         apiFetch("/api/master/")
       ]);
+      const profile = profileRes.status === "fulfilled" ? profileRes.value : null;
+      const files   = filesRes.status === "fulfilled"   ? filesRes.value   : null;
+      const history = historyRes.status === "fulfilled" ? historyRes.value : null;
+      const master  = masterRes.status === "fulfilled"  ? masterRes.value  : null;
 
       // Greeting
-      if (profile.full_name) {
+      if (profile?.full_name) {
         document.getElementById("greeting").textContent = `Welcome back, ${profile.full_name.split(" ")[0]}`;
       }
 
       // Stats
-      document.getElementById("stat-files").textContent    = files.length;
-      document.getElementById("stat-tailored").textContent = history.total ?? 0;
+      document.getElementById("stat-files").textContent    = files?.length ?? "—";
+      document.getElementById("stat-tailored").textContent = history?.total ?? 0;
 
       // Master resume status — built with DOM to prevent XSS on master.content
       const masterEl = document.getElementById("master-status");
       masterEl.innerHTML = "";
-      if (master.content) {
+      if (master?.content) {
         const alertDiv = document.createElement("div");
         alertDiv.className = "alert alert-success";
-        alertDiv.textContent = `Master resume is up to date — last updated ${fmtDate(master.last_updated)}`;
+        alertDiv.textContent = `Master resume is up to date — last updated ${fmtDate(master?.last_updated)}`;
 
         const details = document.createElement("details");
         details.style.marginTop = "8px";
@@ -153,7 +159,8 @@
         summary.textContent = "Preview first 400 characters";
         const pre = document.createElement("pre");
         pre.style.cssText = "font-size:12px;color:var(--muted);white-space:pre-wrap;margin-top:8px;";
-        pre.textContent = master.content.slice(0, 400) + "...";
+        const preview = master.content.slice(0, 400);
+        pre.textContent = preview + (master.content.length > 400 ? "…" : "");
         details.appendChild(summary);
         details.appendChild(pre);
 
@@ -174,7 +181,7 @@
       }
 
       // File list
-      renderFileList(files);
+      renderFileList(files ?? []);
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
@@ -205,7 +212,7 @@
       btn.className = "btn btn-outline";
       btn.style.cssText = "font-size:12px;padding:5px 10px";
       btn.textContent = "Remove";
-      btn.addEventListener("click", () => deleteFile(f.id));
+      btn.addEventListener("click", () => deleteFile(f.id, btn));
 
       li.appendChild(info);
       li.appendChild(btn);
@@ -213,18 +220,23 @@
     });
   }
 
-  async function deleteFile(id) {
+  async function deleteFile(id, btn) {
     if (!confirm("Remove this file?")) return;
+    if (btn) { btn.disabled = true; btn.textContent = "Removing…"; }
     try {
       await apiFetch(`/api/resumes/${id}`, { method: "DELETE" });
-      loadDashboard();
+      await loadDashboard();
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Remove"; }
     }
   }
 
   async function synthesizeMaster() {
+    if (_synthesizing) return;
+    _synthesizing = true;
     const btn = document.getElementById("btn-synthesize");
     btn.disabled = true;
     btn.textContent = "Synthesizing… (this takes ~2 min)";
@@ -240,7 +252,7 @@
           const master = await apiFetch("/api/master/");
           if (master.last_updated && new Date(master.last_updated) > startedAt) {
             showAlert("alert-box", "Master resume updated.", "success");
-            loadDashboard();
+            await loadDashboard();
             return;
           }
         } catch (pollErr) {
@@ -251,11 +263,12 @@
         btn.textContent = `Synthesizing… (${elapsed}s elapsed)`;
         attempts++;
       }
-      showAlert("alert-box", "Synthesis is taking longer than expected — check back in a minute.", "info");
+      showAlert("alert-box", "Synthesis timed out — it may have failed. Try synthesizing again.", "error");
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message || "Synthesis failed. Please try again.", "error");
     } finally {
+      _synthesizing = false;
       btn.disabled = false;
       btn.textContent = "Re-Synthesize Master Resume";
     }
@@ -272,7 +285,7 @@
       await uploadFile(file);
     }
     e.target.value = "";
-    loadDashboard();
+    await loadDashboard();
   }
 
   async function uploadFile(file) {
@@ -307,7 +320,7 @@
     for (const file of Array.from(e.dataTransfer.files)) {
       await uploadFile(file);
     }
-    loadDashboard();
+    await loadDashboard();
   });
 
   // Initial load is now handled in the requireAuth block above

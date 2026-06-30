@@ -24,8 +24,14 @@ sys.modules["services.claude"] = _STUB       # restore MagicMock for the rest of
 PROFILE = {"full_name": "Jane Smith", "email": "jane@example.com"}
 
 
-def _fake_message(text="SYNTHESIZED RESUME"):
-    """Build a minimal Anthropic response stub."""
+def _fake_message(text="SYNTHESIZED RESUME\nEXPERIENCE\nEngineer | Acme | 2020-2023\n• Built things."):
+    """Build a minimal Anthropic response stub.
+
+    Default text includes EXPERIENCE so synthesize_master_resume() does not
+    return None (the corruption guard added in Jun 2026 rejects EXPERIENCE-free output).
+    Tests that care about the exact text must pass their own value — include
+    'EXPERIENCE' in it or the function will return None before the test assertion.
+    """
     msg = MagicMock()
     msg.content = [MagicMock(text=text)]
     msg.usage = MagicMock(input_tokens=100, output_tokens=50)
@@ -88,9 +94,10 @@ class TestSynthesisCapping:
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_returns_claude_text(self, mock_client):
         """Return value is the text from the Claude response."""
-        mock_client.messages.create.return_value = _fake_message("MY MASTER RESUME")
+        resume_text = "MY MASTER RESUME\nEXPERIENCE\nEngineer | Acme | 2020-2023\n• Built things."
+        mock_client.messages.create.return_value = _fake_message(resume_text)
         result = _real_claude_mod.synthesize_master_resume(["Some text"], PROFILE)
-        assert result == "MY MASTER RESUME"
+        assert result == resume_text
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_sends_single_user_message(self, mock_client):
@@ -106,13 +113,13 @@ class TestSynthesisCapping:
 
     @patch.object(_real_claude_mod, "client")
     def test_timeout_passed_to_api(self, mock_client):
-        """API call must carry the timeout so slow responses don't hang forever."""
+        """Synthesis uses SYNTHESIS_TIMEOUT (180s), not the shorter API_TIMEOUT (60s)."""
         mock_client.messages.create.return_value = _fake_message()
         _real_claude_mod.synthesize_master_resume(["text"], PROFILE)
 
         call_kwargs = mock_client.messages.create.call_args[1]
         assert "timeout" in call_kwargs
-        assert call_kwargs["timeout"] == _real_claude_mod.API_TIMEOUT
+        assert call_kwargs["timeout"] == _real_claude_mod.SYNTHESIS_TIMEOUT
 
     @patch.object(_real_claude_mod, "client")
     def test_synthesis_max_tokens_is_8000(self, mock_client):
@@ -137,7 +144,7 @@ class TestSynthesisCapping:
         continuation call fires.  The continuation sends prior output as an
         assistant turn so Claude resumes from the exact stopping point.
         """
-        truncated = _fake_message("PARTIAL RESUME\nSome complete line.")
+        truncated = _fake_message("PARTIAL RESUME\nEXPERIENCE\nEngineer | Acme | 2020-2023\nSome complete line.")
         truncated.usage.output_tokens = 8000   # at the limit → triggers continuation
         cont = _fake_message("REST OF RESUME")
         cont.usage.output_tokens = 100          # clean stop
@@ -275,3 +282,60 @@ class TestBuildTailorPrompt:
             job_description="JD",
         )
         assert "fabricate" in prompt.lower() or "invent" in prompt.lower()
+
+    def test_projects_appears_in_allowed_sections(self):
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert "PROJECTS" in prompt
+
+    def test_projects_relevance_gate(self):
+        """Prompt must gate PROJECTS on JD relevance and give an explicit omit instruction."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert "Include PROJECTS only if" in prompt
+        assert "Omit the section entirely" in prompt
+
+    def test_projects_word_budget_applies(self):
+        """Prompt must tell Claude the PROJECTS section counts toward the word budget."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert "PROJECTS section counts toward the 475" in prompt
+
+    def test_projects_pipe_format(self):
+        """Prompt must specify the pipe-separated format for project headers."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert "Project Name | Role/Tech | Year" in prompt
+
+    def test_projects_bullet_format(self):
+        """Prompt must require bullet character in the PROJECTS rule block."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert 'Every bullet starts with "•"' in prompt
+
+    def test_section_numbering_is_1_to_6(self):
+        """All six numbered sections must be present — ensures PROJECTS wasn't silently dropped."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        for n in ("1.", "2.", "3.", "4.", "5.", "6."):
+            assert n in prompt, f"Section {n} missing from prompt"
+
+    def test_projects_two_pipe_note(self):
+        """PROJECTS header format must explicitly say TWO pipe characters (parity with EXPERIENCE)."""
+        prompt = _real_claude_mod._build_tailor_prompt(
+            name="Jane", contact_block="Jane | jane@example.com",
+            target="the role below", master_resume="MASTER", job_description="JD",
+        )
+        assert "format with TWO pipe characters: Project Name" in prompt

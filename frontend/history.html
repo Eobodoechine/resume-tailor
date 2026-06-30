@@ -23,6 +23,7 @@
 </nav>
 
 <div class="container">
+  <div id="alert-box"></div>
   <div style="margin-bottom:24px;">
     <h1 style="font-size:22px;font-weight:700;color:var(--navy)">Resume History</h1>
     <p style="color:var(--muted);font-size:14px;margin-top:4px;">Every tailored resume you've generated. Download any as a PDF.</p>
@@ -139,7 +140,9 @@
       updateLoadMore(data.has_more);
     } catch (e) {
       if (e && e.redirecting) return;
-      alert(e.message);
+      const errRow = document.createElement("tr");
+      errRow.innerHTML = `<td colspan="4" style="text-align:center;color:#dc2626;padding:12px;">Failed to load more — ${e.message}</td>`;
+      document.getElementById("history-body").appendChild(errRow);
     } finally {
       btn.disabled    = false;
       btn.textContent = "Load More";
@@ -161,7 +164,17 @@
       await apiDownload(`/api/tailor/${id}/pdf`, filename);
     } catch (e) {
       if (e && e.redirecting) return;
-      alert(e.message);
+      const box = document.getElementById("alert-box");
+      if (box) {
+        box.innerHTML = `<div class="alert alert-error">PDF download failed: ${e.message}</div>`;
+        setTimeout(() => { box.innerHTML = ""; }, 5000);
+      } else {
+        const banner = document.createElement("div");
+        banner.style.cssText = "position:fixed;top:0;left:0;right:0;background:#dc2626;color:white;padding:12px;text-align:center;z-index:9999;";
+        banner.textContent = `PDF download failed: ${e.message}`;
+        document.body.prepend(banner);
+        setTimeout(() => banner.remove(), 5000);
+      }
     }
   }
 

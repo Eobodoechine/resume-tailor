@@ -46,12 +46,13 @@
 
     <div class="chat-input-row">
       <input type="text" id="chat-input" placeholder="Type your answer..."
+             maxlength="2000"
              onkeydown="if(event.key==='Enter') sendMessage()">
       <button class="btn btn-primary" onclick="sendMessage()" id="btn-send">Send</button>
     </div>
   </div>
 
-  <div id="update-notice" style="display:none;" class="alert alert-success" style="margin-top:12px;">
+  <div id="update-notice" style="display:none;margin-top:12px;" class="alert alert-success">
     ✓ Your master resume was just updated with new information.
   </div>
 
@@ -79,6 +80,7 @@
             No master resume found. Go to <a href="/dashboard">Home</a> to upload files and synthesize first.
           </div>`;
         document.getElementById("btn-send").disabled = true;
+        document.querySelector("#chat-messages .msg-assistant").style.display = "none";
       }
     } catch (e) {
       if (e && e.redirecting) return;

@@ -208,12 +208,21 @@ class TestFontFallback:
         doesn't exist (CI / fresh checkout). Regression guard: _load_font_b64
         must warn, not raise.
         """
+        import renderers as _renderers_pkg
         saved = sys.modules.pop("renderers.fde_html", None)
+        saved_attr = getattr(_renderers_pkg, "fde_html", None)
         try:
             import renderers.fde_html  # must not raise
         finally:
+            # Restore BOTH sys.modules and the package attribute.
+            # Re-importing sets renderers.fde_html on the package object; if we
+            # only restore sys.modules, unittest.mock.patch() later resolves the
+            # target via getattr(renderers, "fde_html") and patches the leaked
+            # fresh module, while render() imports the original — mock never fires.
             if saved is not None:
                 sys.modules["renderers.fde_html"] = saved
+            if saved_attr is not None:
+                _renderers_pkg.fde_html = saved_attr
 
 
 # ── 4. Section presence / absence ─────────────────────────────────────────────

@@ -295,9 +295,32 @@ tr:hover td { background: var(--light); }
   margin: 60px auto;
 }
 
+/* ── Mobile-only utility ──────────────────────── */
+.mobile-only { display: none; }
+
 /* ── Responsive ───────────────────────────────── */
 @media (max-width: 640px) {
   .dash-grid { grid-template-columns: 1fr; }
   nav { padding: 0 16px; }
   .hero h1 { font-size: 26px; }
+
+  .nav-links {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding-bottom: 4px;
+  }
+  .nav-links a {
+    white-space: nowrap;
+    font-size: 0.8rem;
+    padding: 4px 8px;
+  }
+
+  .mobile-only { display: block; }
+  .resume-hidden-notice {
+    font-size: 0.75rem;
+    color: #6b7280;
+    font-style: italic;
+  }
 }

@@ -164,17 +164,22 @@ def reject_request(request: Request, body: ApprovalBody, _ctx: AuthContext = Dep
 
     email = result.data[0].get("email", "unknown")
     logger.info("[admin] rejecting  request_id=%s  email=%s  by=%s", body.request_id, email, _ctx.user.id)
-    admin.table("access_requests").update({
-        "status": "rejected",
-        "reviewed_at": datetime.now(timezone.utc).isoformat()
-    }).eq("id", str(body.request_id)).execute()
+    try:
+        admin.table("access_requests").update({
+            "status": "rejected",
+            "reviewed_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", str(body.request_id)).execute()
+    except Exception as e:
+        logger.error("[admin] reject DB update FAILED  request_id=%s  error=%s", body.request_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reject request — please try again.")
     logger.info("[admin] rejected OK  request_id=%s  email=%s  by=%s", body.request_id, email, _ctx.user.id)
 
     return {"message": "Request rejected"}
 
 
+@limiter.limit("60/minute")
 @router.get("/users")
-def list_users(limit: int = 100, offset: int = 0, _ctx: AuthContext = Depends(require_admin)):
+def list_users(request: Request, limit: int = 100, offset: int = 0, _ctx: AuthContext = Depends(require_admin)):
     """List all approved users."""
     limit = min(max(1, limit), 500)
     offset = max(0, offset)

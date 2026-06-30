@@ -66,27 +66,55 @@ class RedirectingError extends Error {
   constructor() { super("__redirecting"); this.redirecting = true; }
 }
 
+function coldStartBanner() {
+  const existing = document.getElementById("cold-start-banner");
+  if (existing) return () => existing.remove();
+  const el = document.createElement("div");
+  el.id = "cold-start-banner";
+  el.style.cssText = [
+    "position:fixed", "top:0", "left:0", "right:0", "z-index:9999",
+    "background:#1d4ed8", "color:white", "text-align:center",
+    "padding:10px 16px", "font-size:0.875rem", "font-weight:500",
+    "box-shadow:0 2px 8px rgba(0,0,0,0.15)"
+  ].join(";");
+  el.textContent = "Starting up the server — this may take up to 30 seconds on first load. Please wait…";
+  document.body.prepend(el);
+  return () => el.remove();
+}
+
 async function apiFetch(path, options = {}) {
-  const res = await fetch(API + path, {
-    ...options,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
+  let _removeBanner = null;
+  const _bannerTimer = setTimeout(() => { _removeBanner = coldStartBanner(); }, 5000);
+  try {
+    let res;
+    try {
+      res = await fetch(API + path, {
+        ...options,
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {})
+        }
+      });
+    } catch (_netErr) {
+      throw new Error("Network error — check your connection and try again.");
     }
-  });
-  if (res.status === 401) {
-    clearToken();
-    // Also ask the server to clear the cookie (belt + suspenders)
-    fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
-    window.location.href = "/";
-    // Throw so callers stop dereferencing the (undefined) result before
-    // the navigation actually happens.
-    throw new RedirectingError();
+    if (res.status === 401) {
+      clearToken();
+      // Also ask the server to clear the cookie (belt + suspenders)
+      fetch("/api/auth/session", { method: "DELETE", credentials: "include" }).catch(() => {});
+      window.location.href = "/";
+      // Throw so callers stop dereferencing the (undefined) result before
+      // the navigation actually happens.
+      throw new RedirectingError();
+    }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(formatDetail(json.detail, "Request failed"));
+    return json;
+  } finally {
+    clearTimeout(_bannerTimer);
+    if (_removeBanner) _removeBanner();
   }
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(formatDetail(json.detail, "Request failed"));
-  return json;
 }
 
 async function apiUpload(path, formData) {
@@ -273,14 +301,15 @@ async function logout() {
             // Exchange failed (e.g. 403 not approved) — clear the flag so
             // the next requireAuth() call on the dashboard will redirect to login.
             localStorage.removeItem("rt_session_active");
+            window.location.replace("/?error=magic_link_failed");
+            return;
           }
-          // Clean URL hash regardless of outcome, then redirect to dashboard
           window.location.replace("/dashboard");
         })
         .catch(() => {
-          // Network failure — clear flag and let the 401 on first API call handle it
+          // Network failure — clear flag and redirect to login with error signal
           localStorage.removeItem("rt_session_active");
-          window.location.replace("/dashboard");
+          window.location.replace("/?error=magic_link_failed");
         });
     }
   }

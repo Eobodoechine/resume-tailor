@@ -51,7 +51,7 @@
     <label>Website / Portfolio (optional)</label>
     <input type="text" id="website" placeholder="yoursite.com">
 
-    <button class="btn btn-primary" onclick="saveProfile()">Save Profile</button>
+    <button class="btn btn-primary" id="btn-save-profile" onclick="saveProfile()">Save Profile</button>
   </div>
 </div>
 
@@ -75,6 +75,8 @@
   }
 
   async function saveProfile() {
+    const btn = document.getElementById("btn-save-profile");
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
     try {
       await apiFetch("/api/profile/", {
         method: "PATCH",
@@ -90,6 +92,8 @@
     } catch (e) {
       if (e && e.redirecting) return;
       showAlert("alert-box", e.message, "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Save Profile"; }
     }
   }
 
